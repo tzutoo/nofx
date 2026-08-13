@@ -176,6 +176,7 @@ func (s *Server) handleClosePosition(c *gin.Context) {
 		tempTrader = bybit.NewBybitTrader(
 			string(exchangeCfg.APIKey),
 			string(exchangeCfg.SecretKey),
+			exchangeCfg.Testnet,
 		)
 	case "okx":
 		tempTrader = okx.NewOKXTrader(

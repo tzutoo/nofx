@@ -108,7 +108,7 @@ func (t *BybitTrader) GetClosedPnL(startTime time.Time, limit int) ([]types.Clos
 func (t *BybitTrader) getClosedPnLViaHTTP(startTime time.Time, limit int) ([]types.ClosedPnLRecord, error) {
 	// Build query string
 	queryParams := fmt.Sprintf("category=linear&startTime=%d&limit=%d", startTime.UnixMilli(), limit)
-	url := "https://api.bybit.com/v5/position/closed-pnl?" + queryParams
+	url := t.baseURL + "/v5/position/closed-pnl?" + queryParams
 
 	// Generate timestamp
 	timestamp := fmt.Sprintf("%d", time.Now().UnixMilli())

@@ -3,8 +3,10 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"nofx/config"
 	"nofx/crypto"
@@ -245,7 +247,61 @@ func (s *Server) handleGetSupportedModels(c *gin.Context) {
 	// Return static list of supported AI models with default versions
 	supportedModels := []map[string]interface{}{
 		{"id": "claw402", "name": "Claw402 (Base USDC)", "provider": "claw402", "defaultModel": "gpt-5.6"},
+		{"id": "custom", "name": "Custom API", "provider": "custom", "defaultModel": ""},
 	}
 
 	c.JSON(http.StatusOK, supportedModels)
+}
+
+// handleFetchModelNames proxies a GET {base_url}/models request to an
+// OpenAI-compatible endpoint and returns the available model ids. The base URL
+// is SSRF-validated and the response parsed server-side so the browser never
+// contacts arbitrary third-party hosts directly (avoids CORS + client fetches).
+func (s *Server) handleFetchModelNames(c *gin.Context) {
+	baseURL := strings.TrimSuffix(strings.TrimSpace(c.Query("base_url")), "#")
+	if baseURL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "base_url is required"})
+		return
+	}
+	if err := security.ValidateURL(baseURL); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid base_url: URL must be a public HTTPS endpoint"})
+		return
+	}
+
+	modelsURL := strings.TrimRight(baseURL, "/") + "/models"
+	client := &http.Client{Timeout: 15 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, modelsURL, nil)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid base_url"})
+		return
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to reach endpoint"})
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("endpoint returned HTTP %d", resp.StatusCode)})
+		return
+	}
+
+	var parsed struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "unexpected response format"})
+		return
+	}
+	names := make([]string, 0, len(parsed.Data))
+	for _, m := range parsed.Data {
+		if id := strings.TrimSpace(m.ID); id != "" {
+			names = append(names, id)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"data": names})
 }

@@ -689,7 +689,7 @@ func (t *BybitTrader) GetOrderBook(symbol string, depth int) (bids, asks [][]flo
 	}
 
 	// Use HTTP request directly since the SDK doesn't expose GetOrderbook
-	url := fmt.Sprintf("https://api.bybit.com/v5/market/orderbook?category=linear&symbol=%s&limit=%d", symbol, depth)
+	url := fmt.Sprintf("%s/v5/market/orderbook?category=linear&symbol=%s&limit=%d", t.baseURL, symbol, depth)
 	resp, err := http.Get(url)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get order book: %w", err)

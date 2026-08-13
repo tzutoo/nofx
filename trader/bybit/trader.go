@@ -20,6 +20,7 @@ type BybitTrader struct {
 	client    *bybit.Client
 	apiKey    string
 	secretKey string
+	baseURL   string
 
 	// Balance cache
 	cachedBalance     map[string]interface{}
@@ -40,10 +41,15 @@ type BybitTrader struct {
 }
 
 // NewBybitTrader creates a Bybit trader
-func NewBybitTrader(apiKey, secretKey string) *BybitTrader {
+func NewBybitTrader(apiKey, secretKey string, demo bool) *BybitTrader {
 	const src = "Up000938"
 
-	client := bybit.NewBybitHttpClient(apiKey, secretKey, bybit.WithBaseURL(bybit.MAINNET))
+	baseURL := bybit.MAINNET
+	if demo {
+		baseURL = bybit.DEMO_ENV
+	}
+
+	client := bybit.NewBybitHttpClient(apiKey, secretKey, bybit.WithBaseURL(baseURL))
 
 	// Set HTTP transport. Use a dedicated client instead of mutating the
 	// SDK default (http.DefaultClient): mutating it would leak the referer
@@ -68,11 +74,12 @@ func NewBybitTrader(apiKey, secretKey string) *BybitTrader {
 		client:        client,
 		apiKey:        apiKey,
 		secretKey:     secretKey,
+		baseURL:       baseURL,
 		cacheDuration: 15 * time.Second,
 		qtyStepCache:  make(map[string]float64),
 	}
 
-	logger.Infof("🔵 [Bybit] Trader initialized")
+	logger.Infof("🔵 [Bybit] Trader initialized (demo=%v, baseURL=%s)", demo, baseURL)
 
 	return trader
 }
@@ -99,7 +106,7 @@ func (t *BybitTrader) getQtyStep(symbol string) float64 {
 	t.qtyStepCacheMutex.RUnlock()
 
 	// Call public API directly to get contract information
-	url := fmt.Sprintf("https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=%s", symbol)
+	url := fmt.Sprintf("%s/v5/market/instruments-info?category=linear&symbol=%s", t.baseURL, symbol)
 	resp, err := http.Get(url)
 	if err != nil {
 		logger.Infof("⚠️ [Bybit] Failed to get precision info for %s: %v", symbol, err)

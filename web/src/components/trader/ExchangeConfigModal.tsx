@@ -595,6 +595,25 @@ export function ExchangeConfigModal({
                     />
                   </div>
 
+                  {currentExchangeType === 'bybit' && (
+                    <label className="flex items-start gap-3 p-4 rounded-xl cursor-pointer" style={{ background: 'rgba(224, 72, 59, 0.08)', border: '1px solid rgba(224, 72, 59, 0.2)' }}>
+                      <input
+                        type="checkbox"
+                        checked={testnet}
+                        onChange={(e) => setTestnet(e.target.checked)}
+                        className="mt-0.5 w-4 h-4 accent-[#E0483B]"
+                      />
+                      <span className="flex-1">
+                        <span className="block text-sm font-semibold" style={{ color: '#1A1813' }}>
+                          {t('useDemoTrading', language)}
+                        </span>
+                        <span className="block text-xs" style={{ color: '#8A8478' }}>
+                          {t('demoTradingDescription', language)}
+                        </span>
+                      </span>
+                    </label>
+                  )}
+
                   {(currentExchangeType === 'okx' || currentExchangeType === 'bitget' || currentExchangeType === 'kucoin') && (
                     <div className="space-y-2">
                       <label className="flex items-center gap-2 text-sm font-semibold" style={{ color: '#1A1813' }}>

@@ -4,6 +4,7 @@ import { Trash2, Brain, ExternalLink } from 'lucide-react'
 import type { AIModel } from '../../types'
 import type { Language } from '../../i18n/translations'
 import { t } from '../../i18n/translations'
+import { api } from '../../lib/api'
 import { getModelIcon, getModelColor } from '../common/ModelIcons'
 import { ModelStepIndicator } from './ModelStepIndicator'
 import { ModelCard } from './ModelCard'
@@ -1176,6 +1177,30 @@ function StandardProviderConfigForm({
   onSubmit: (e: React.FormEvent) => void
   language: Language
 }) {
+  const [availableModels, setAvailableModels] = useState<string[]>([])
+  const [fetchingModels, setFetchingModels] = useState(false)
+  const [fetchError, setFetchError] = useState('')
+
+  const handleFetchModels = async () => {
+    if (!baseUrl.trim()) {
+      setFetchError('Enter a base URL first')
+      return
+    }
+    setFetchingModels(true)
+    setFetchError('')
+    try {
+      const names = await api.fetchRemoteModels(baseUrl.trim())
+      setAvailableModels(names)
+      if (names.length === 0) setFetchError('No models returned')
+    } catch (err) {
+      setFetchError(
+        err instanceof Error ? err.message : 'Failed to fetch models'
+      )
+    } finally {
+      setFetchingModels(false)
+    }
+  }
+
   return (
     <form onSubmit={onSubmit} className="space-y-5">
       {/* Selected Model Header */}
@@ -1340,40 +1365,88 @@ function StandardProviderConfigForm({
       {/* Custom Model Name */}
       <div className="space-y-2">
           <label
-            className="flex items-center gap-2 text-sm font-semibold"
+            className="flex items-center justify-between gap-2 text-sm font-semibold"
             style={{ color: '#1A1813' }}
           >
-            <svg
-              className="w-4 h-4"
-              style={{ color: '#E0483B' }}
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
+            <span className="flex items-center gap-2">
+              <svg
+                className="w-4 h-4"
+                style={{ color: '#E0483B' }}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"
+                />
+              </svg>
+              {t('customModelName', language)}
+            </span>
+            <button
+              type="button"
+              onClick={handleFetchModels}
+              disabled={fetchingModels}
+              className="text-xs font-medium px-3 py-1.5 rounded-lg transition-all hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ background: 'rgba(224, 72, 59, 0.1)', color: '#E0483B' }}
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"
-              />
-            </svg>
-            {t('customModelName', language)}
+              {fetchingModels ? 'Fetching…' : 'Fetch models'}
+            </button>
           </label>
-          <input
-            type="text"
-            value={modelName}
-            onChange={(e) => onModelNameChange(e.target.value)}
-            placeholder={t('customModelNamePlaceholder', language)}
-            className="w-full px-4 py-3 rounded-xl"
-            style={{
-              background: '#F1ECE2',
-              border: '1px solid rgba(26,24,19,0.14)',
-              color: '#1A1813',
-            }}
-          />
-        <div className="text-xs" style={{ color: '#8A8478' }}>
-          {t('leaveBlankForDefaultModel', language)}
-        </div>
+
+          {availableModels.length > 0 ? (
+            <select
+              value={modelName}
+              onChange={(e) => {
+                if (e.target.value === '__manual__') {
+                  setAvailableModels([])
+                  onModelNameChange('')
+                } else {
+                  onModelNameChange(e.target.value)
+                }
+              }}
+              className="w-full px-4 py-3 rounded-xl"
+              style={{
+                background: '#F1ECE2',
+                border: '1px solid rgba(26,24,19,0.14)',
+                color: '#1A1813',
+              }}
+            >
+              <option value="">{t('modelConfig.selectModel', language)}…</option>
+              {availableModels.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+              <option value="__manual__">↳ Enter manually…</option>
+            </select>
+          ) : (
+            <input
+              type="text"
+              value={modelName}
+              onChange={(e) => onModelNameChange(e.target.value)}
+              placeholder={t('customModelNamePlaceholder', language)}
+              className="w-full px-4 py-3 rounded-xl"
+              style={{
+                background: '#F1ECE2',
+                border: '1px solid rgba(26,24,19,0.14)',
+                color: '#1A1813',
+              }}
+            />
+          )}
+
+          {fetchError && (
+            <div className="text-xs" style={{ color: '#D6433A' }}>
+              {fetchError}
+            </div>
+          )}
+          {availableModels.length > 0 && !fetchError && (
+            <div className="text-xs" style={{ color: '#8A8478' }}>
+              {availableModels.length} model(s) available
+            </div>
+          )}
       </div>
 
       {/* Info Box */}

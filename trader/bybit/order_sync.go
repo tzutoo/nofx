@@ -44,7 +44,7 @@ func (t *BybitTrader) GetTrades(startTime time.Time, limit int) ([]BybitTrade, e
 func (t *BybitTrader) getTradesViaHTTP(startTime time.Time, limit int) ([]BybitTrade, error) {
 	// Build query string
 	queryParams := fmt.Sprintf("category=linear&startTime=%d&limit=%d", startTime.UnixMilli(), limit)
-	url := "https://api.bybit.com/v5/execution/list?" + queryParams
+	url := t.baseURL + "/v5/execution/list?" + queryParams
 
 	// Generate timestamp
 	timestamp := fmt.Sprintf("%d", time.Now().UnixMilli())

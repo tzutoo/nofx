@@ -25,6 +25,16 @@ export const configApi = {
     return result.data!
   },
 
+  async fetchRemoteModels(baseUrl: string): Promise<string[]> {
+    const result = await httpClient.get<{ data: string[] }>(
+      `${API_BASE}/models/fetch?base_url=${encodeURIComponent(baseUrl)}`
+    )
+    if (!result.success || !result.data) {
+      throw new Error(result.message || 'Failed to fetch models')
+    }
+    return result.data.data ?? []
+  },
+
   async getPromptTemplates(): Promise<string[]> {
     const res = await fetch(`${API_BASE}/prompt-templates`)
     if (!res.ok) throw new Error('Failed to fetch prompt templates')

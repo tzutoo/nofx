@@ -274,6 +274,7 @@ Body: {"show_in_competition":<bool>}`,
 			s.route(protected, "GET", "/ai-costs/summary", "Get AI cost summary (?period=today)", s.handleGetAICostsSummary)
 
 			// AI model configuration
+			s.route(protected, "GET", "/models/fetch", "Fetch available model names from a custom OpenAI-compatible endpoint (?base_url=...)", s.handleFetchModelNames)
 			s.routeWithSchema(protected, "GET", "/models", "List AI model configs",
 				`Returns: [{"id":"<EXACT id — use this as ai_model_id when creating/updating a trader>","name":"<display name>","provider":"<short provider name — NOT a valid id>","enabled":<bool>}]
 CRITICAL: The "id" field (e.g. "abc123_deepseek") is what you must use for ai_model_id. The "provider" field ("deepseek") is NOT valid as an id.`,

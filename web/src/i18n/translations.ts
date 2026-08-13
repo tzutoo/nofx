@@ -149,7 +149,12 @@ export const translations = {
     configureExchanges: 'Configure Exchanges',
     aiScanInterval: 'AI Scan Decision Interval (minutes)',
     scanIntervalRecommend: 'Recommended: 15-30 minutes',
+    embedBlockedNote: 'This page blocks third-party embedding. Open it directly instead.',
+    openInNewTab: 'Open in new tab',
     useTestnet: 'Use Testnet',
+    useDemoTrading: 'Demo Trading',
+    demoTradingDescription:
+      'Use Bybit Demo Trading (api-demo.bybit.com) with a Demo Trading API key for simulated trading',
     enabled: 'Enabled',
     save: 'Save',
 
@@ -1385,7 +1390,12 @@ export const translations = {
     configureExchanges: '配置交易所',
     aiScanInterval: 'AI 扫描决策间隔 (分钟)',
     scanIntervalRecommend: '建议: 15-30分钟',
+    embedBlockedNote: '此页面禁止第三方嵌入，请直接打开。',
+    openInNewTab: '在新标签页打开',
     useTestnet: '使用测试网',
+    useDemoTrading: '模拟交易',
+    demoTradingDescription:
+      '使用 Bybit 模拟交易（api-demo.bybit.com），需使用模拟交易 API Key 进行模拟交易',
     enabled: '启用',
     save: '保存',
 
@@ -2544,7 +2554,12 @@ export const translations = {
     configureExchanges: 'Konfigurasi Bursa',
     aiScanInterval: 'Interval Keputusan AI (menit)',
     scanIntervalRecommend: 'Disarankan: 15-30 menit',
+    embedBlockedNote: 'Halaman ini memblokir penyematan pihak ketiga. Buka langsung sebagai gantinya.',
+    openInNewTab: 'Buka di tab baru',
     useTestnet: 'Gunakan Testnet',
+    useDemoTrading: 'Trading Demo',
+    demoTradingDescription:
+      'Gunakan Bybit Demo Trading (api-demo.bybit.com) dengan API key Demo Trading untuk trading simulasi',
     enabled: 'Aktif',
     save: 'Simpan',
 
