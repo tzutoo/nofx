@@ -10,6 +10,7 @@ import (
 	_ "nofx/mcp/payment"
 	_ "nofx/mcp/provider"
 	"nofx/store"
+	"nofx/telegram"
 	"nofx/telemetry"
 	"os"
 	"os/signal"
@@ -143,6 +144,14 @@ func main() {
 			logger.Fatalf("❌ Failed to start API server: %v", err)
 		}
 	}()
+
+	// Telegram bot (hot-reloadable): start it in a goroutine and wire the
+	// reload channel so re-saving the token in the UI restarts the bot with
+	// the new credentials.
+	telegramReloadCh := make(chan struct{})
+	server.SetTelegramReloadCh(telegramReloadCh)
+	go telegram.Start(cfg, st, telegramReloadCh)
+	logger.Info("🤖 Telegram bot goroutine started")
 
 	// Wait for interrupt signal
 	quit := make(chan os.Signal, 1)
