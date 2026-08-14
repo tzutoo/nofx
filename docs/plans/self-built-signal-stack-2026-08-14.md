@@ -6,17 +6,23 @@ Replace the paid Claw402/Vergex signal data that NOFX's strategy engine consumes
 
 ## Execution Index
 
-| # | Work item | Goal | Done when | Key files | Dependencies | Size |
-|---|---|---|---|---|---|---|
-| 1 | Richer Hyperliquid info structs | Service can read OI/funding/mark per symbol | `metaAndAssetCtxs` decode exposes `openInterest`/`funding`/`oraclePx` + OI-delta | `provider/hyperliquid/coins.go` | none | S |
-| 2 | Standalone signal service (core) | Four products computed + served over HTTP | `/v1/health`, `/v1/signal/ranking`, `/v1/signal/lab`, `/v1/signal/heatmap`, `/v1/netflow/ranking` all respond from a live ingest snapshot | `service/signal/*`, `cmd/signal-service/main.go`, `Dockerfile.signal`, `docker-compose.signal.yml` | 1 | XL |
-| 3 | `vergex.Client` transport rewrite | Engine talks to service, not claw402 | `NewClient(baseURL, logger)`; plain GET `doGET`; `client_test.go` still green; retryable-error surface | `provider/vergex/client.go`, `client_test.go` | 2 (must land atomically — see below) | M |
-| 4 | Engine repoint | No claw402 routing in data path | `NewStrategyEngine` drops `SetClaw402`, always builds vergex client at `SIGNAL_SERVICE_BASE_URL`; `auto_trader.go` unchanged, `api/strategy.go` edited to relax `resolveStrategyDataWalletKey` | `kernel/engine.go`, `api/strategy.go` | 3 | S |
-| 5 | Prompt disclosure line | AI told heatmap/net-flow are proxies | disclosure line added once to `vergexHoldRules()` (single English function); `engine_prompt_test.go` still passes; new test asserts disclosure substring | `kernel/engine_prompt.go` | none | XS |
-| 6 | Degradation hardening | Service-down doesn't abort cycle | `Run` loop + `api/strategy.go` tolerate `GetCandidateCoins` error; verify `Run` first (prerequisite) | `trader/auto_trader.go`, `api/strategy.go` | 4 | S |
-| 7 | Pineify integration (optional) | Pineify augments `xyz:` TradeFi signal + technicals for ~20 crypto majors; long-tail HL stays pure-HL | gated behind `PINEIFY_MCP_TOKEN`; rate-limited to `PINEIFY_RATE_PER_MINUTE` inside the ingest worker only; never blocks 1–6 | `service/signal/pineify.go` | 2 | M |
+| # | Work item | Goal | Done when | Key files | Dependencies | Size | Status |
+|---|---|---|---|---|---|---|---|
+| 1 | Richer Hyperliquid info structs | Service can read OI/funding/mark per symbol | `metaAndAssetCtxs` decode exposes `openInterest`/`funding`/`oraclePx` + OI-delta | `provider/hyperliquid/coins.go` | none | S | ✅ |
+| 2 | Standalone signal service (core) | Four products computed + served over HTTP | `/v1/health`, `/v1/signal/ranking`, `/v1/signal/lab`, `/v1/signal/heatmap`, `/v1/netflow/ranking` all respond from a live ingest snapshot | `service/signal/*`, `cmd/signal-service/main.go`, `Dockerfile.signal`, `docker-compose.signal.yml` | 1 | XL | ✅ |
+| 3 | `vergex.Client` transport rewrite | Engine talks to service, not claw402 | `NewClient(baseURL, logger)`; plain GET `doGET`; `client_test.go` still green; retryable-error surface | `provider/vergex/client.go`, `client_test.go` | 2 (must land atomically — see below) | M | ✅ |
+| 4 | Engine repoint | No claw402 routing in data path | `NewStrategyEngine` drops `SetClaw402`, always builds vergex client at `SIGNAL_SERVICE_BASE_URL`; `auto_trader.go` unchanged, `api/strategy.go` edited to relax `resolveStrategyDataWalletKey` | `kernel/engine.go`, `api/strategy.go` | 3 | S | ✅ |
+| 5 | Prompt disclosure line | AI told heatmap/net-flow are proxies | disclosure line added once to `vergexHoldRules()` (single English function); `engine_prompt_test.go` still passes; new test asserts disclosure substring | `kernel/engine_prompt.go` | none | XS | ✅ |
+| 6 | Degradation hardening | Service-down doesn't abort cycle | `Run` loop + `api/strategy.go` tolerate `GetCandidateCoins` error; verify `Run` first (prerequisite) | `trader/auto_trader.go`, `api/strategy.go` | 4 | S | ✅ |
+| 7 | Pineify integration (optional) | Pineify augments `xyz:` TradeFi signal + technicals for ~20 crypto majors; long-tail HL stays pure-HL | gated behind `PINEIFY_MCP_TOKEN`; rate-limited to `PINEIFY_RATE_PER_MINUTE` inside the ingest worker only; never blocks 1–6 | `service/signal/pineify.go` | 2 | M | 🚫 deferred |
 
 Size legend: XS < S < M < L < XL.
+
+> **Status legend:** ✅ implemented + tested · 🚫 intentionally not built
+>
+> **Item 7 (Pineify) — deferred, not a gap.** The core mission (removing the paid claw402 dependency) is fully met by items 1–6 without Pineify. Pineify would reintroduce an *external* provider (paid, behind `PINEIFY_MCP_TOKEN`) to augment `xyz:` TradeFi technicals for ~20 crypto majors. Building it is optional and does not advance the claw402-removal goal. Revisit only if TradeFi technical augmentation is explicitly wanted.
+>
+> **Backfill — not implementable as a task.** (1) *Population* cost-basis/heatmap backfill is **impossible**: `clearinghouseState` is per-wallet **current-only** in public Hyperliquid data, so historical entry/liquidation levels for the population cannot be reconstructed (see §3.3.2, §5). (2) *Self-wallet* shallow history via a rolling position log is **buildable but forward-only**: it accumulates from when logging starts and cannot retroactively backfill. Both are documented hard limits, not skipped work.
 
 ---
 
