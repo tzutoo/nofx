@@ -197,6 +197,17 @@ Emits the `dimensions[]` schema (`family/label/direction/strength/percentile/det
 
 The `vergex_signal`/HL-native strategies previously *skipped* nofxos netflow (`usesHyperliquidNativeUniverse`). The service net-flow therefore **fills a previously-empty feed** rather than replacing a live one. **Confirmed decision (per review):** phase-1 keeps `FetchNetFlowRankingData` on the free `nofxos` provider (unchanged); the service's `/v1/netflow/ranking` endpoint is shipped for API-completeness and future use but is **NOT consumed by the engine in phase-1**. This satisfies the goal — net-flow is already not a claw402 cost in the current engine path — and routes the engine's net-flow to the service is deferred to phase-2. Window semantics: define `window` = 1h (HL funding is hourly) and `OI_delta_current_window` = OI delta over one ingest interval scaled to the window.
 
+#### 3.3.5 Caveat vs. Claw402 — proxy, not order-flow
+
+**What NOFX always consumed from Claw402 is the same derived surface** (institution/personal net-flow amounts, OI deltas, funding, POC/heatmap levels). NOFX **never received raw order-flow** (trade/execution tape, order-book depth, aggressor-side prints) from Claw402 — those fields above are the full extent of the feed it exposed. So this plan does **not** regress NOFX's order-flow access; it reproduces the identical output contract.
+
+**The unknown is Claw402's *internal* derivation.** Whether Claw402 computed its institution net-flow / heatmap from real order-flow tape or from funding/OI proxies is proprietary and not visible from the delivered payload. Two cases:
+
+- If Claw402 derived from funding/OI the same way, the self-hosted values are functionally equivalent.
+- If Claw402 used real trade/order-flow tape internally, the self-hosted `Amount`/`bins` magnitudes are **proxies of the same shape, not Claw402-equivalent numbers** — the AI should treat them as directional/proxy signals, not as Claw402 parity. The §3.7 disclosure line already tells the AI this.
+
+**Implication:** match on *shape and format* (byte-parity), **never** on absolute numeric parity with past Claw402 values. Do not use Claw402-derived numbers as a regression benchmark for the service's output.
+
 ### 3.4 Config and source selection
 
 All new settings are env vars (no DB schema change, no `store/strategy.go` migration; `SourceType: "vergex_signal"` remains the selection, `VergexLimit/MarketType/Chain/LiqBand` remain the query surface passed to the service):
