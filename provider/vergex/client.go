@@ -2,37 +2,33 @@ package vergex
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
 	"nofx/mcp"
-	"nofx/mcp/payment"
 	"nofx/provider/hyperliquid"
 	"os"
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/ethereum/go-ethereum/crypto"
 )
 
 const (
-	DefaultBaseURL             = "https://claw402.ai"
+	DefaultBaseURL             = "https://claw402.ai" // retained for reference; NewClient now targets SIGNAL_SERVICE_BASE_URL
 	DefaultChain               = "mainnet"
 	DefaultMarketType          = "hip3_perp"
 	MaxSignalRankingItems      = 30
-	SignalRankingPath          = "/api/v1/vergex/signal-ranking"
-	SignalLabPath              = "/api/v1/vergex/signal-lab"
-	CostLiquidationHeatmapPath = "/api/v1/vergex/cost-liquidation-heatmap"
-	FlowMarketsPath            = "/api/v1/vergex/flow-markets"
+	SignalRankingPath          = "/v1/signal/ranking"
+	SignalLabPath              = "/v1/signal/lab"
+	CostLiquidationHeatmapPath = "/v1/signal/heatmap"
+	FlowMarketsPath            = "/v1/netflow/ranking"
 )
 
 type Client struct {
 	baseURL    string
-	privateKey *ecdsa.PrivateKey
 	httpClient *http.Client
 	logger     mcp.Logger
 }
@@ -72,33 +68,25 @@ type MarketAnalysis struct {
 	HeatmapError   string          `json:"heatmap_error,omitempty"`
 }
 
-func NewClient(baseURL, privateKeyHex string, logger mcp.Logger) (*Client, error) {
+// NewClient builds a vergex client pointed at the self-hosted signal service.
+// It is infallible: no wallet key / x402 signing is required. baseURL falls
+// back to SIGNAL_SERVICE_BASE_URL, then http://localhost:8480.
+func NewClient(baseURL string, logger mcp.Logger) *Client {
 	if baseURL == "" {
-		baseURL = DefaultBaseURL
+		baseURL = os.Getenv("SIGNAL_SERVICE_BASE_URL")
+	}
+	if baseURL == "" {
+		baseURL = "http://localhost:8480"
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
-	if privateKeyHex == "" {
-		privateKeyHex = os.Getenv("CLAW402_WALLET_KEY")
-	}
-	if privateKeyHex == "" {
-		return nil, fmt.Errorf("claw402 wallet private key not set")
-	}
 	if logger == nil {
 		logger = mcp.NewNoopLogger()
 	}
-
-	hexKey := strings.TrimPrefix(strings.TrimSpace(privateKeyHex), "0x")
-	pk, err := crypto.HexToECDSA(hexKey)
-	if err != nil {
-		return nil, fmt.Errorf("invalid claw402 private key: %w", err)
-	}
-
 	return &Client{
 		baseURL:    baseURL,
-		privateKey: pk,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 		logger:     logger,
-	}, nil
+	}
 }
 
 func (c *Client) GetSignalRanking(ctx context.Context, q Query) (*SignalRankingData, error) {
@@ -176,25 +164,27 @@ func (c *Client) doGET(ctx context.Context, path string, params url.Values) ([]b
 		fullURL += "?" + encoded
 	}
 
-	buildReq := func() (*http.Request, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("X-Client-ID", "nofx")
-		return req, nil
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
+	if err != nil {
+		return nil, err
 	}
+	req.Header.Set("X-Client-ID", "nofx")
 
-	body, err := payment.DoX402Request(
-		ctx,
-		c.httpClient,
-		buildReq,
-		payment.MakeClaw402SignFunc(c.privateKey),
-		"claw402-vergex",
-		c.logger,
-	)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("vergex request failed (%s): %w", path, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("vergex read failed (%s): %w", path, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		// Wrap non-200 so the message carries the retryable markers the engine
+		// checks (isRetryableVergexDetailError): "invalid markettype",
+		// "invalid_request", "invalid chain", "market not found", "not_found".
+		return nil, fmt.Errorf("vergex HTTP %d (%s): %s", resp.StatusCode, path, strings.TrimSpace(string(body)))
 	}
 	return body, nil
 }

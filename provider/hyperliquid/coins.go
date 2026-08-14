@@ -84,9 +84,89 @@ type metaResponse struct {
 
 // assetCtx represents asset context with market data.
 type assetCtx struct {
-	DayNtlVlm string `json:"dayNtlVlm"` // 24h notional volume
-	MarkPx    string `json:"markPx"`
-	PrevDayPx string `json:"prevDayPx"`
+	DayNtlVlm    string `json:"dayNtlVlm"`    // 24h notional volume
+	MarkPx       string `json:"markPx"`       // current mark price
+	PrevDayPx    string `json:"prevDayPx"`    // previous day oracle/price
+	OpenInterest string `json:"openInterest"` // open interest (base-coin units)
+	Funding      string `json:"funding"`      // current funding rate
+	OraclePx     string `json:"oraclePx"`     // oracle price
+}
+
+// MarketSnapshot is the richer per-asset cross-section the self-hosted signal
+// service needs to compute ranking / signal-lab / heatmap products. It carries
+// mark price, 24h reference price, funding, open interest and oracle price for
+// every tradable perp asset on a Hyperliquid dex.
+type MarketSnapshot struct {
+	Symbol       string  `json:"symbol"`
+	MarkPx       float64 `json:"mark_px"`
+	PrevDayPx    float64 `json:"prev_day_px,omitempty"`
+	OpenInterest float64 `json:"open_interest,omitempty"`
+	Funding      float64 `json:"funding,omitempty"`
+	OraclePx     float64 `json:"oracle_px,omitempty"`
+	MaxLeverage  int     `json:"max_leverage,omitempty"`
+	SzDecimals   int     `json:"sz_decimals,omitempty"`
+}
+
+// GetMarketSnapshot fetches the richer per-asset cross-section (mark, 24h ref,
+// funding, open interest, oracle) for a Hyperliquid dex. dex "" = default perp
+// dex; dex "xyz" = the HIP-3 TradeFi perp dex. It is the raw input the signal
+// service's ingest worker consumes.
+func GetMarketSnapshot(ctx context.Context, client *http.Client, dex string) ([]MarketSnapshot, error) {
+	reqPayload := map[string]string{"type": "metaAndAssetCtxs"}
+	if dex != "" {
+		reqPayload["dex"] = dex
+	}
+	reqBody, err := json.Marshal(reqPayload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", hyperliquidInfoURL, bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch market snapshot: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
+	}
+
+	var rawResp []json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&rawResp); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	if len(rawResp) < 2 {
+		return nil, fmt.Errorf("unexpected response format")
+	}
+	var meta metaResponse
+	if err := json.Unmarshal(rawResp[0], &meta); err != nil {
+		return nil, fmt.Errorf("failed to parse meta: %w", err)
+	}
+	var ctxs []assetCtx
+	if err := json.Unmarshal(rawResp[1], &ctxs); err != nil {
+		return nil, fmt.Errorf("failed to parse asset contexts: %w", err)
+	}
+
+	snapshot := make([]MarketSnapshot, 0, len(meta.Universe))
+	for i, u := range meta.Universe {
+		item := MarketSnapshot{
+			Symbol:      u.Name,
+			MaxLeverage: u.MaxLeverage,
+			SzDecimals:  u.SzDecimals,
+		}
+		if i < len(ctxs) {
+			item.MarkPx, _ = strconv.ParseFloat(ctxs[i].MarkPx, 64)
+			item.PrevDayPx, _ = strconv.ParseFloat(ctxs[i].PrevDayPx, 64)
+			item.OpenInterest, _ = strconv.ParseFloat(ctxs[i].OpenInterest, 64)
+			item.Funding, _ = strconv.ParseFloat(ctxs[i].Funding, 64)
+			item.OraclePx, _ = strconv.ParseFloat(ctxs[i].OraclePx, 64)
+		}
+		snapshot = append(snapshot, item)
+	}
+	return snapshot, nil
 }
 
 func fetchPerpDexCoins(ctx context.Context, client *http.Client, dex string) ([]CoinInfo, error) {

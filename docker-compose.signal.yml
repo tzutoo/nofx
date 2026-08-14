@@ -1,0 +1,23 @@
+services:
+  signal-service:
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile.signal
+    container_name: nofx-signal-service
+    restart: unless-stopped
+    ports:
+      - "${SIGNAL_SERVICE_PORT:-8480}:8480"
+    env_file:
+      - .env
+    environment:
+      - SIGNAL_SERVICE_LISTEN=:8480
+      - SIGNAL_SERVICE_INTERVAL=${SIGNAL_SERVICE_INTERVAL:-3m}
+      - HYPERLIQUID_WALLET_ADDR=${HYPERLIQUID_WALLET_ADDR:-}
+      # PINEIFY_MCP_TOKEN must come from .env (secret); PINEIFY_RATE_PER_MINUTE bounds calls.
+      - PINEIFY_RATE_PER_MINUTE=${PINEIFY_RATE_PER_MINUTE:-3}
+    networks:
+      - nofx-network
+
+networks:
+  nofx-network:
+    driver: bridge

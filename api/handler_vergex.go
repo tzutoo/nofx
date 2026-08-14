@@ -96,26 +96,13 @@ func (s *Server) handleVergexFlowMarkets(c *gin.Context) {
 }
 
 func (s *Server) newVergexClientForRequest(c *gin.Context) (*vergex.Client, bool) {
-	userID := c.GetString("user_id")
-	if userID == "" {
+	// Require an authenticated user (the endpoints are in the protected group).
+	if c.GetString("user_id") == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return nil, false
 	}
-	walletKey, err := s.resolveStrategyDataWalletKey(userID, c.Query("ai_model_id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return nil, false
-	}
-	if walletKey == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "claw402 wallet is not configured"})
-		return nil, false
-	}
-	client, err := vergex.NewClient("", walletKey, &logger.MCPLogger{})
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return nil, false
-	}
-	return client, true
+	// The self-hosted signal service requires no wallet key.
+	return vergex.NewClient("", &logger.MCPLogger{}), true
 }
 
 func parsePositiveInt(raw string, fallback int) int {

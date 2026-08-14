@@ -1,0 +1,18 @@
+# signal-service — standalone Hyperliquid-derived signal stack (replaces Claw402 data).
+# Pure Go, no CGO/TA-Lib needed (HTTP + JSON only).
+ARG GO_VERSION=1.25.11-alpine
+
+FROM golang:${GO_VERSION} AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/signal-service ./cmd/signal-service
+
+FROM alpine:latest
+RUN apk add --no-cache ca-certificates tzdata
+COPY --from=builder /out/signal-service /usr/local/bin/signal-service
+EXPOSE 8480
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8480/v1/health || exit 1
+CMD ["signal-service"]

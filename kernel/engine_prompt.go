@@ -261,7 +261,8 @@ func (e *StrategyEngine) buildVergexSystemPrompt(accountEquity float64, variant 
 func vergexHoldRules() string {
 	return "- Hold for meaningful moves, do not churn: hold new positions for at least 90 minutes; never close inside the -2%..+3% noise band before ~3 hours; after closing a symbol wait 4 hours before re-entry; open at most 1-2 new positions per hour. Small in-and-out trades bled this account to death on fees.\n" +
 		"- Fees are the main edge killer: a round trip costs ~0.1% of notional. Only take setups whose realistic target is well beyond fees: stop-loss around -3% and take-profit around +8% or beyond. Do not aim for 0.2-0.3% scalps — they cannot cover fees.\n" +
-		"- Give positions room to develop: place stops beyond short-term noise (around -3%) and targets at meaningful heatmap resistance/liquidation zones (around +8%). Do not exit on small green or small red.\n\n"
+		"- Give positions room to develop: place stops beyond short-term noise (around -3%) and targets at meaningful heatmap resistance/liquidation zones (around +8%). Do not exit on small green or small red.\n" +
+		"- Data note: the cost/liquidation heatmap and net-flow are self-built proxies derived from public funding, open-interest and mark data, not a full trader-book ledger; treat them as stress indicators, not absolute liquidation levels.\n\n"
 }
 
 func vergexCustomPromptSection(section string) string {

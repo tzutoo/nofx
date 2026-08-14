@@ -13,7 +13,6 @@ import (
 	"nofx/provider/vergex"
 	"nofx/security"
 	"nofx/store"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -193,53 +192,25 @@ type StrategyEngine struct {
 }
 
 // NewStrategyEngine creates strategy execution engine.
-// claw402WalletKey is optional — if provided, nofxos data requests are routed through claw402.
+// The claw402WalletKey variadic is retained for backward-compatible call sites
+// but is IGNORED: the data plane no longer routes through claw402. NofxOS goes
+// direct (free), and the vergex client points at the self-hosted signal
+// service (SIGNAL_SERVICE_BASE_URL, default http://localhost:8480).
 func NewStrategyEngine(config *store.StrategyConfig, claw402WalletKey ...string) *StrategyEngine {
-	// Create NofxOS client with API key from config
+	// Create NofxOS client with API key from config (direct nofxos.ai — no claw402).
 	apiKey := config.Indicators.NofxOSAPIKey
 	if apiKey == "" {
 		apiKey = nofxos.DefaultAuthKey
 	}
 	client := nofxos.NewClient(nofxos.DefaultBaseURL, apiKey)
 
-	// If claw402 wallet key is provided (from trader's AI config), route through claw402
-	walletKey := ""
-	if len(claw402WalletKey) > 0 {
-		walletKey = claw402WalletKey[0]
-	}
-	if walletKey == "" {
-		walletKey = os.Getenv("CLAW402_WALLET_KEY")
-	}
-	if walletKey != "" {
-		claw402URL := os.Getenv("CLAW402_URL")
-		if claw402URL == "" {
-			claw402URL = "https://claw402.ai"
-		}
-		claw402Client, err := nofxos.NewClaw402DataClient(claw402URL, walletKey, &logger.MCPLogger{})
-		if err == nil {
-			client.SetClaw402(claw402Client)
-			logger.Infof("🔗 NofxOS data routed through claw402 (%s)", claw402URL)
-		} else {
-			logger.Warnf("⚠️ Failed to init claw402 data client: %v (using direct nofxos.ai)", err)
-		}
-
-		vergexClient, err := vergex.NewClient(claw402URL, walletKey, &logger.MCPLogger{})
-		if err == nil {
-			logger.Infof("🔗 Vergex signals routed through claw402 (%s)", claw402URL)
-		} else {
-			logger.Warnf("⚠️ Failed to init Vergex claw402 client: %v", err)
-		}
-		return &StrategyEngine{
-			config:             config,
-			nofxosClient:       client,
-			vergexClient:       vergexClient,
-			vergexRankingCache: make(map[string]*vergex.SignalRankItem),
-		}
-	}
+	// Vergex client always points at the self-hosted signal service (infallible).
+	vergexClient := vergex.NewClient("", &logger.MCPLogger{})
 
 	return &StrategyEngine{
 		config:             config,
 		nofxosClient:       client,
+		vergexClient:       vergexClient,
 		vergexRankingCache: make(map[string]*vergex.SignalRankItem),
 	}
 }
