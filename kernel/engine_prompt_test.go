@@ -114,6 +114,26 @@ func TestBuildSystemPromptDoesNotForceLongOnlyForSingleXYZ(t *testing.T) {
 	}
 }
 
+// TestBuildSystemPromptIncludesSelfBuiltProxyDisclosure verifies the one
+// additive prompt disclosure: the cost/liquidation heatmap and net-flow are
+// self-built proxies, not a full trader-book ledger. The AI must never treat
+// proxy liquidation levels as absolute.
+func TestBuildSystemPromptIncludesSelfBuiltProxyDisclosure(t *testing.T) {
+	cfg := store.GetDefaultStrategyConfig("en")
+	cfg.CoinSource.SourceType = "vergex_signal"
+	cfg.CoinSource.VergexLimit = 5
+
+	engine := NewStrategyEngine(&cfg)
+	prompt := engine.BuildSystemPrompt(30, "balanced")
+
+	if !strings.Contains(prompt, "self-built proxies") {
+		t.Fatalf("system prompt is missing the self-built proxy disclosure:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "public funding, open-interest and mark data") {
+		t.Fatalf("system prompt disclosure should cite the public data sources:\n%s", prompt)
+	}
+}
+
 func containsCJK(text string) bool {
 	for _, r := range text {
 		if r >= 0x4E00 && r <= 0x9FFF {
