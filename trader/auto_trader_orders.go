@@ -21,7 +21,48 @@ const (
 	// position size so a price move between sizing and execution cannot
 	// trigger an insufficient-margin rejection.
 	positionSizeSafetyFactor = 0.98
+
+	// defaultStopLossPct / defaultTakeProfitPct are the fallback SL/TP levels
+	// (as a fraction of the entry price) applied when a decision omits them,
+	// matching the vergexHoldRules prompt guidance (~-3% stop, ~+8% target).
+	defaultStopLossPct   = 0.03
+	defaultTakeProfitPct = 0.08
 )
+
+// ensureStopLossTakeProfitDefaults fills BOTH SL/TP from entryPrice whenever
+// EITHER is <= 0. Returns an error only when entryPrice is unusable (<= 0) —
+// callers abort the open before positioning. Never mutates a fully-specified pair.
+func (at *AutoTrader) ensureStopLossTakeProfitDefaults(d *kernel.Decision, entryPrice float64) error {
+	if d.StopLoss > 0 && d.TakeProfit > 0 {
+		return nil
+	}
+	if entryPrice <= 0 {
+		return fmt.Errorf("cannot derive default SL/TP from invalid entry price %.4f for %s", entryPrice, d.Symbol)
+	}
+	if d.Action == "open_short" {
+		d.StopLoss = entryPrice * (1 + defaultStopLossPct)
+		d.TakeProfit = entryPrice * (1 - defaultTakeProfitPct)
+	} else { // open_long (and defensive default)
+		d.StopLoss = entryPrice * (1 - defaultStopLossPct)
+		d.TakeProfit = entryPrice * (1 + defaultTakeProfitPct)
+	}
+	at.logInfof("Filled default SL/TP for %s from entry %.4f: SL=%.4f TP=%.4f", d.Symbol, entryPrice, d.StopLoss, d.TakeProfit)
+	return nil
+}
+
+// attachStopLossTakeProfit places both reduce-only trigger orders for an open
+// position. Any failure returns immediately (position stays open on the
+// exchange — caller records the error). Called only after
+// ensureStopLossTakeProfitDefaults, so prices are always > 0.
+func (at *AutoTrader) attachStopLossTakeProfit(symbol, side string, quantity, stopLoss, takeProfit float64) error {
+	if err := at.trader.SetStopLoss(symbol, side, quantity, stopLoss); err != nil {
+		return fmt.Errorf("opened %s but failed to set stop loss at %.4f: %w", symbol, stopLoss, err)
+	}
+	if err := at.trader.SetTakeProfit(symbol, side, quantity, takeProfit); err != nil {
+		return fmt.Errorf("opened %s but failed to set take profit at %.4f: %w", symbol, takeProfit, err)
+	}
+	return nil
+}
 
 // executeDecisionWithRecord executes AI decision and records detailed information
 func (at *AutoTrader) executeDecisionWithRecord(decision *kernel.Decision, actionRecord *store.DecisionAction) error {
@@ -121,6 +162,14 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	actionRecord.Quantity = quantity
 	actionRecord.Price = marketData.CurrentPrice
 
+	// Fill default SL/TP before opening (clean abort if entry price unusable),
+	// and persist the effective values into the decision record.
+	if err := at.ensureStopLossTakeProfitDefaults(decision, marketData.CurrentPrice); err != nil {
+		return fmt.Errorf("aborting %s open without SL/TP: %w", decision.Symbol, err)
+	}
+	actionRecord.StopLoss = decision.StopLoss
+	actionRecord.TakeProfit = decision.TakeProfit
+
 	// Set margin mode
 	if err := at.trader.SetMarginMode(decision.Symbol, at.config.IsCrossMargin); err != nil {
 		logger.Infof("  ⚠️ Failed to set margin mode: %v", err)
@@ -147,12 +196,9 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	posKey := decision.Symbol + "_long"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
-	// Set stop loss and take profit
-	if err := at.trader.SetStopLoss(decision.Symbol, "LONG", quantity, decision.StopLoss); err != nil {
-		logger.Infof("  ⚠ Failed to set stop loss: %v", err)
-	}
-	if err := at.trader.SetTakeProfit(decision.Symbol, "LONG", quantity, decision.TakeProfit); err != nil {
-		logger.Infof("  ⚠ Failed to set take profit: %v", err)
+	// Set stop loss and take profit (fatal: never leave an open position unprotected)
+	if err := at.attachStopLossTakeProfit(decision.Symbol, "LONG", quantity, decision.StopLoss, decision.TakeProfit); err != nil {
+		return err
 	}
 
 	return nil
@@ -237,6 +283,14 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 	actionRecord.Quantity = quantity
 	actionRecord.Price = marketData.CurrentPrice
 
+	// Fill default SL/TP before opening (clean abort if entry price unusable),
+	// and persist the effective values into the decision record.
+	if err := at.ensureStopLossTakeProfitDefaults(decision, marketData.CurrentPrice); err != nil {
+		return fmt.Errorf("aborting %s open without SL/TP: %w", decision.Symbol, err)
+	}
+	actionRecord.StopLoss = decision.StopLoss
+	actionRecord.TakeProfit = decision.TakeProfit
+
 	// Set margin mode
 	if err := at.trader.SetMarginMode(decision.Symbol, at.config.IsCrossMargin); err != nil {
 		logger.Infof("  ⚠️ Failed to set margin mode: %v", err)
@@ -263,12 +317,9 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 	posKey := decision.Symbol + "_short"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
-	// Set stop loss and take profit
-	if err := at.trader.SetStopLoss(decision.Symbol, "SHORT", quantity, decision.StopLoss); err != nil {
-		logger.Infof("  ⚠ Failed to set stop loss: %v", err)
-	}
-	if err := at.trader.SetTakeProfit(decision.Symbol, "SHORT", quantity, decision.TakeProfit); err != nil {
-		logger.Infof("  ⚠ Failed to set take profit: %v", err)
+	// Set stop loss and take profit (fatal: never leave an open position unprotected)
+	if err := at.attachStopLossTakeProfit(decision.Symbol, "SHORT", quantity, decision.StopLoss, decision.TakeProfit); err != nil {
+		return err
 	}
 
 	return nil
