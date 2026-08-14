@@ -1015,11 +1015,11 @@ func GetDefaultStrategyConfig(lang string) StrategyConfig {
 		},
 		RiskControl: RiskControlConfig{
 			MaxPositions:                 2,   // Few, concentrated positions held for big moves (CODE ENFORCED)
-			BTCETHMaxLeverage:            10,  // Moderate leverage: a wide (-5%) stop is ~-50% margin, survivable, not an instant liquidation
-			AltcoinMaxLeverage:           10,  // Moderate leverage: a wide (-5%) stop is ~-50% margin, survivable, not an instant liquidation
-			BTCETHMaxPositionValueRatio:  5.0, // Per-position notional = equity × 5; 2 positions = 10x total (full margin at 10x, ~10% liquidation cushion)
-			AltcoinMaxPositionValueRatio: 5.0, // Per-position notional = equity × 5; 2 positions = 10x total (full margin at 10x, ~10% liquidation cushion)
-			MaxMarginUsage:               1.0, // Claw402 Autopilot intentionally uses full margin when opening
+			BTCETHMaxLeverage:            3,   // Conservative leverage for a small account: a -3%..-5% stop is ~-9%..-15% margin, survivable
+			AltcoinMaxLeverage:           3,   // Conservative leverage for a small account: a -3%..-5% stop is ~-9%..-15% margin, survivable
+			BTCETHMaxPositionValueRatio:  1.0, // Per-position notional = equity × 1; 2 positions = 2x total (~33% liquidation cushion at 3x)
+			AltcoinMaxPositionValueRatio: 1.0, // Per-position notional = equity × 1; 2 positions = 2x total (~33% liquidation cushion at 3x)
+			MaxMarginUsage:               0.5, // Cap margin at ~half of equity to leave a buffer
 			MinPositionSize:              12,  // Min 12 USDT per position (CODE ENFORCED)
 			MinRiskRewardRatio:           3.0, // Min 3:1 profit/loss ratio (AI guided)
 			MinConfidence:                78,  // Min 78% confidence (AI guided)

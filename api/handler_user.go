@@ -263,14 +263,14 @@ func (s *Server) createDefaultStrategies(userID string, lang string) error {
 		c.CoinSource.VergexMarketType = "all"
 		c.CoinSource.VergexChain = "hyperliquid"
 		c.RiskControl.MaxPositions = 2
-		c.RiskControl.BTCETHMaxLeverage = 10
-		c.RiskControl.AltcoinMaxLeverage = 10
-		// Few, concentrated positions held for big moves. 10x leverage keeps a
-		// wide (-5%) stop survivable (~-50% margin, ~10% liquidation cushion);
-		// 2 positions × 5x = 10x total notional (full margin, doubled exposure).
-		c.RiskControl.BTCETHMaxPositionValueRatio = 5.0
-		c.RiskControl.AltcoinMaxPositionValueRatio = 5.0
-		c.RiskControl.MaxMarginUsage = 1.0
+		c.RiskControl.BTCETHMaxLeverage = 3
+		c.RiskControl.AltcoinMaxLeverage = 3
+		// Conservative sizing for a small account: 3x leverage keeps a -3%..-5%
+		// stop at ~-9%..-15% margin; 2 positions × 1x = 2x total notional (~33%
+		// liquidation cushion), margin capped at half of equity.
+		c.RiskControl.BTCETHMaxPositionValueRatio = 1.0
+		c.RiskControl.AltcoinMaxPositionValueRatio = 1.0
+		c.RiskControl.MaxMarginUsage = 0.5
 		c.RiskControl.MinConfidence = 78
 		c.RiskControl.MinRiskRewardRatio = 3.0
 		c.Indicators.Klines.PrimaryTimeframe = "15m"
