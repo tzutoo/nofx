@@ -19,6 +19,11 @@ import (
 // in v1.
 var rankingWeights = [3]float64{0.45, 0.35, 0.20}
 
+// factorStats holds the mean and standard deviation of one factor across a
+// cohort cross-section. Declared at package level so the shared helpers
+// zscore/meanStd can use it.
+type factorStats struct{ mean, std float64 }
+
 // Rank builds a SignalRankingData from the current snapshot. z-scores are
 // computed separately within each market cohort (core_perp vs hip3_perp) so
 // high-vol crypto does not mute low-vol TradeFi, then merged into one board.
@@ -35,7 +40,6 @@ func (s *Service) Rank(limit int) *vergex.SignalRankingData {
 		byCohort[a.MarketType] = append(byCohort[a.MarketType], a)
 	}
 
-	type factorStats struct{ mean, std float64 }
 	cohortStats := map[string][3]factorStats{} // index by factor
 
 	for cohort, list := range byCohort {
@@ -335,11 +339,6 @@ func (s *Service) NetFlow(window string, limit int) (*nofxos.NetFlowRankingData,
 	if len(assets) == 0 {
 		return &nofxos.NetFlowRankingData{}, nil
 	}
-	type entry struct {
-		sym    string
-		amount float64
-		price  float64
-	}
 	var inst, retail []entry
 	for _, a := range assets {
 		instAmount := a.Funding * a.OI * a.Mark
@@ -374,6 +373,14 @@ func (s *Service) NetFlow(window string, limit int) (*nofxos.NetFlowRankingData,
 	data.PersonalFutureTop = build(positive(retail))
 	data.PersonalFutureLow = build(negative(retail))
 	return data, nil
+}
+
+// entry is a single net-flow rank candidate. Declared at package level so the
+// shared helpers positive/negative can use it.
+type entry struct {
+	sym    string
+	amount float64
+	price  float64
 }
 
 // positive returns entries with amount >= 0 (inflow), negative returns amount < 0.
