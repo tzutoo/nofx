@@ -25,6 +25,10 @@ services:
     environment:
       - TZ=${TZ:-Asia/Shanghai}
       - AI_MAX_TOKENS=8000
+      # The strategy engine's vergex client points at the self-hosted signal
+      # service over the compose network (localhost inside the container is the
+      # container itself, not the host where :8480 is published).
+      - SIGNAL_SERVICE_BASE_URL=http://nofx-signal-service:8480
     networks:
       - nofx-network
     healthcheck:
