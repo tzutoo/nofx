@@ -21,15 +21,15 @@ import (
 )
 
 const (
-	DefaultBaseURL                     = "https://claw402.ai" // paid claw402 gateway (x402-signed) — used for the heatmap only
-	DefaultChain                       = "mainnet"
-	DefaultMarketType                  = "hip3_perp"
-	MaxSignalRankingItems              = 30
-	SignalRankingPath                  = "/v1/signal/ranking"
-	SignalLabPath                      = "/v1/signal/lab"
-	CostLiquidationHeatmapPath         = "/v1/signal/heatmap"
-	Claw402CostLiquidationHeatmapPath  = "/api/v1/vergex/cost-liquidation-heatmap"
-	FlowMarketsPath                    = "/v1/netflow/ranking"
+	DefaultBaseURL                    = "https://claw402.ai" // paid claw402 gateway (x402-signed) — used for the heatmap only
+	DefaultChain                      = "mainnet"
+	DefaultMarketType                 = "hip3_perp"
+	MaxSignalRankingItems             = 30
+	SignalRankingPath                 = "/v1/signal/ranking"
+	SignalLabPath                     = "/v1/signal/lab"
+	CostLiquidationHeatmapPath        = "/v1/signal/heatmap"
+	Claw402CostLiquidationHeatmapPath = "/api/v1/vergex/cost-liquidation-heatmap"
+	FlowMarketsPath                   = "/v1/netflow/ranking"
 )
 
 type Client struct {
@@ -120,6 +120,14 @@ func NewClient(baseURL, walletKeyHex string, logger mcp.Logger) *Client {
 	}
 	c.privateKey = pk
 	return c
+}
+
+// BaseURL returns the self-hosted signal-service base URL this client talks to.
+func (c *Client) BaseURL() string {
+	if c == nil {
+		return ""
+	}
+	return c.baseURL
 }
 
 func (c *Client) GetSignalRanking(ctx context.Context, q Query) (*SignalRankingData, error) {

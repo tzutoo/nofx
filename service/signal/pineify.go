@@ -122,42 +122,53 @@ func (s *Service) enrichWithPineify(ctx context.Context, assets map[string]*asse
 		return
 	}
 
-	// Mappable items in the prior snapshot's rank order (best-first).
+	// Build the enrichment ordering:
+	//   1. The engine's current candidate set (highest priority — these are the
+	//      symbols the AI will actually judge this cycle).
+	//   2. The strongest mappable items by composite score (top-K).
+	//   3. The remaining mappable universe (round-robin) to fill the budget.
 	mappable := s.mappableBoard(assets)
-	topK := mappable
-	if len(topK) > 10 {
-		topK = topK[:10]
+	byScore := make([]string, len(mappable))
+	copy(byScore, mappable)
+	sort.Slice(byScore, func(i, j int) bool { return assets[byScore[i]].Score > assets[byScore[j]].Score })
+
+	priority := s.Priority()
+	var ordered []string
+	seen := make(map[string]bool)
+	for _, sym := range priority {
+		if assets[sym] != nil && pineifyTicker(baseOf(sym)) != "" && !seen[sym] {
+			ordered = append(ordered, sym)
+			seen[sym] = true
+		}
+	}
+	for _, sym := range byScore {
+		if len(ordered) >= 10 {
+			break
+		}
+		if !seen[sym] {
+			ordered = append(ordered, sym)
+			seen[sym] = true
+		}
+	}
+	for _, sym := range mappable {
+		if !seen[sym] {
+			ordered = append(ordered, sym)
+			seen[sym] = true
+		}
 	}
 
-	// Priority tier: always enrich top-K, then fill the remaining budget
-	// round-robin. Every Pineify call (including failed ones) consumes budget;
-	// the remaining budget is threaded in so we never overshoot past it.
+	// Enrich in priority order. Every Pineify call (including failed ones)
+	// consumes budget; the remaining budget is threaded in so we never overshoot.
 	used := 0
-	enrich := func(sym string) {
+	for _, sym := range ordered {
 		if used >= budget {
-			return
+			break
 		}
 		a := assets[sym]
 		snap, calls := s.enrichSymbol(ctx, client, limiter, sym, a.MarketType, budget-used)
 		a.Pineify = snap
 		s.logger().Infof("  pineify %s -> coverage=%q bias=%q calls=%d", sym, snap.Coverage, snap.Bias, calls)
 		used += calls
-	}
-
-	for _, sym := range topK {
-		enrich(sym)
-	}
-	if used < budget {
-		rest := make([]string, 0, len(mappable))
-		for _, sym := range mappable {
-			if !contains(topK, sym) {
-				rest = append(rest, sym)
-			}
-		}
-		sort.Strings(rest)
-		for _, sym := range rest {
-			enrich(sym)
-		}
 	}
 	s.logger().Infof("📊 Pineify enrichment complete: %d/%d calls used", used, budget)
 }

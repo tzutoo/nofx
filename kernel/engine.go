@@ -221,6 +221,15 @@ func NewStrategyEngine(config *store.StrategyConfig, claw402WalletKey ...string)
 	}
 }
 
+// SignalServiceBaseURL returns the self-hosted signal-service base URL the
+// engine's vergex client talks to ("" if none configured).
+func (e *StrategyEngine) SignalServiceBaseURL() string {
+	if e == nil || e.vergexClient == nil {
+		return ""
+	}
+	return e.vergexClient.BaseURL()
+}
+
 func (e *StrategyEngine) usesHyperliquidNativeUniverse() bool {
 	if e == nil || e.config == nil {
 		return false

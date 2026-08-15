@@ -16,6 +16,7 @@ func NewHTTPHandler(s *Service) http.Handler {
 	mux.HandleFunc("/v1/signal/lab", s.handleSignalLab)
 	mux.HandleFunc("/v1/signal/heatmap", s.handleHeatmap)
 	mux.HandleFunc("/v1/netflow/ranking", s.handleNetFlow)
+	mux.HandleFunc("/v1/signal/priority", s.handlePriority)
 	return mux
 }
 
@@ -98,6 +99,28 @@ func (s *Service) handleNetFlow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, data)
+}
+
+// handlePriority accepts the engine's current candidate symbols (POST JSON
+// {symbols:[...]}) or returns the current set (GET). The ingest worker uses
+// these to prioritize Pineify enrichment so candidates carry fresh data.
+func (s *Service) handlePriority(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost, http.MethodPut:
+		var body struct {
+			Symbols []string `json:"symbols"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+			return
+		}
+		s.SetPriority(body.Symbols)
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "count": len(body.Symbols)})
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]interface{}{"symbols": s.Priority()})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

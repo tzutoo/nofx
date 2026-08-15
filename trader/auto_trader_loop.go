@@ -1,9 +1,12 @@
 package trader
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"nofx/kernel"
 	"nofx/logger"
 	"nofx/market"
@@ -596,6 +599,10 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 		} else {
 			candidateCoins = coins
 			logger.Infof("📋 [%s] Strategy engine fetched candidate coins: %d", at.name, len(candidateCoins))
+			// Tell the signal-service which symbols we're evaluating so its
+			// Pineify enrichment prioritizes them (fresh data at decision time).
+			// Best-effort and non-blocking — a failure just skips the push.
+			at.pushSignalPriority(candidateCoins)
 		}
 	}
 
@@ -819,5 +826,48 @@ func (at *AutoTrader) checkClaw402Balance() {
 		}
 		logger.Infof("💰 [%s] USDC Balance: $%.2f | Daily AI cost: ~$%.2f | Runway: ~%.1f days",
 			at.name, balance, dailyCost, runway)
+	}
+}
+
+// pushSignalPriority sends the current candidate symbols to the self-hosted
+// signal-service /v1/signal/priority endpoint so Pineify enrichment prioritizes
+// them. Best-effort and non-blocking: a failure is logged at debug and skipped.
+func (at *AutoTrader) pushSignalPriority(coins []kernel.CandidateCoin) {
+	if len(coins) == 0 || at.strategyEngine == nil {
+		return
+	}
+	base := at.strategyEngine.SignalServiceBaseURL()
+	if base == "" {
+		return
+	}
+	symbols := make([]string, 0, len(coins))
+	for _, c := range coins {
+		if c.Symbol != "" {
+			symbols = append(symbols, c.Symbol)
+		}
+	}
+	if len(symbols) == 0 {
+		return
+	}
+	body, err := json.Marshal(map[string]any{"symbols": symbols})
+	if err != nil {
+		return
+	}
+	req, err := http.NewRequest(http.MethodPost, base+"/v1/signal/priority", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		logger.Debugf("⚠️ signal-service priority push skipped: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		logger.Debugf("⚠️ signal-service priority push returned %d", resp.StatusCode)
 	}
 }

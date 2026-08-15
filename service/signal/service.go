@@ -48,6 +48,10 @@ type Service struct {
 	order      []string          // stable ordering for cross-sectional reduction
 	lastIngest time.Time
 	ingestErr  error
+	// prioritySymbols is the engine's current candidate set (symbols it is
+	// actively evaluating). Enrichment prioritizes these so candidates carry
+	// fresh Pineify data at decision time. Thread-safe; set via SetPriority.
+	prioritySymbols []string
 }
 
 // NewService constructs a Service from config.
@@ -69,6 +73,37 @@ func (s *Service) Snapshot() (map[string]*asset, []string, time.Time, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.assets, s.order, s.lastIngest, s.ingestErr
+}
+
+// SetPriority stores the engine's current candidate symbols so enrichment can
+// prioritize them. It is safe for concurrent HTTP handlers and the ingest
+// worker. Passing an empty list clears the priority set.
+func (s *Service) SetPriority(symbols []string) {
+	seen := make(map[string]struct{}, len(symbols))
+	clean := make([]string, 0, len(symbols))
+	for _, sym := range symbols {
+		sym = strings.TrimSpace(sym)
+		if sym == "" {
+			continue
+		}
+		if _, dup := seen[sym]; dup {
+			continue
+		}
+		seen[sym] = struct{}{}
+		clean = append(clean, sym)
+	}
+	s.mu.Lock()
+	s.prioritySymbols = clean
+	s.mu.Unlock()
+}
+
+// Priority returns the engine's current candidate symbols (may be nil/empty).
+func (s *Service) Priority() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, len(s.prioritySymbols))
+	copy(out, s.prioritySymbols)
+	return out
 }
 
 // Ingest fetches the current Hyperliquid cross-section for both the default

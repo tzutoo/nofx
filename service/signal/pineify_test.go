@@ -350,3 +350,28 @@ func TestPineifySnapshotPersistence(t *testing.T) {
 		t.Fatalf("Pineify snapshot not persisted across ingest: %+v", assets["xyz:NVDA"].Pineify)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Candidate priority
+// ---------------------------------------------------------------------------
+
+func TestSetPriorityDedup(t *testing.T) {
+	s := testService(nil)
+	s.SetPriority([]string{"xyz:AAPL", "xyz:AAPL", " xyz:MU ", ""})
+	got := s.Priority()
+	if len(got) != 2 {
+		t.Fatalf("priority len = %d, want 2 (dedup + trim), got %v", len(got), got)
+	}
+	if got[0] != "xyz:AAPL" || got[1] != "xyz:MU" {
+		t.Errorf("priority = %v, want [xyz:AAPL xyz:MU]", got)
+	}
+}
+
+func TestSetPriorityClears(t *testing.T) {
+	s := testService(nil)
+	s.SetPriority([]string{"xyz:AAPL"})
+	s.SetPriority(nil)
+	if len(s.Priority()) != 0 {
+		t.Fatalf("priority should be cleared, got %v", s.Priority())
+	}
+}
