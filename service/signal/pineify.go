@@ -131,12 +131,13 @@ func (s *Service) enrichWithPineify(ctx context.Context, assets map[string]*asse
 		return
 	}
 
-	// Build the enrichment ordering:
+	// Build the enrichment ordering (see buildEnrichmentOrder):
 	//   1. The engine's current candidate set (highest priority — these are the
 	//      symbols the AI will actually judge this cycle).
-	//   2. The strongest TradeFi (hip3_perp) mappable items by score (top-K).
-	//   3. The crypto majors (core_perp, TA-only).
-	//   4. The remaining mappable universe (round-robin) to fill the budget.
+	//   2. A reserved crypto-major floor (cryptoFloorBudget) so crypto is never
+	//      starved by the TradeFi top-K, the largest budget consumer.
+	//   3. The strongest TradeFi (hip3_perp) mappable items by score (top-K).
+	//   4. The remaining crypto majors and TradeFi long tail to fill the budget.
 	mappable := s.mappableBoard(assets)
 	cryptoMappable := s.cryptoMajorBoard(assets)
 	byScore := make([]string, len(mappable))
@@ -144,8 +145,10 @@ func (s *Service) enrichWithPineify(ctx context.Context, assets map[string]*asse
 	sort.Slice(byScore, func(i, j int) bool { return assets[byScore[i]].Score > assets[byScore[j]].Score })
 
 	priority := s.Priority()
-	var ordered []string
-	seen := make(map[string]bool)
+	// Pre-filter engine candidates to the mappable subset (crypto or TradeFi);
+	// buildEnrichmentOrder then reserves a crypto floor before the TradeFi top-K
+	// so a small budget cannot starve the crypto-major tier.
+	var prioMappable []string
 	mappableFor := func(a *asset) bool {
 		if a == nil {
 			return false
@@ -156,38 +159,11 @@ func (s *Service) enrichWithPineify(ctx context.Context, assets map[string]*asse
 		return pineifyTicker(baseOf(a.Symbol)) != ""
 	}
 	for _, sym := range priority {
-		if a := assets[sym]; a != nil && mappableFor(a) && !seen[sym] {
-			ordered = append(ordered, sym)
-			seen[sym] = true
+		if a := assets[sym]; a != nil && mappableFor(a) {
+			prioMappable = append(prioMappable, sym)
 		}
 	}
-	for _, sym := range byScore { // TradeFi (hip3_perp) top-K
-		if len(ordered) >= 10 {
-			break
-		}
-		if !seen[sym] {
-			ordered = append(ordered, sym)
-			seen[sym] = true
-		}
-	}
-	for _, sym := range cryptoMappable { // crypto majors (TA-only)
-		if !seen[sym] {
-			ordered = append(ordered, sym)
-			seen[sym] = true
-		}
-	}
-	for _, sym := range mappable { // round-robin rest (TradeFi)
-		if !seen[sym] {
-			ordered = append(ordered, sym)
-			seen[sym] = true
-		}
-	}
-	for _, sym := range cryptoMappable { // round-robin rest (crypto)
-		if !seen[sym] {
-			ordered = append(ordered, sym)
-			seen[sym] = true
-		}
-	}
+	ordered := buildEnrichmentOrder(prioMappable, cryptoMappable, mappable, byScore, budget)
 	// consumes budget; the remaining budget is threaded in so we never overshoot.
 	used := 0
 	for _, sym := range ordered {
@@ -203,11 +179,12 @@ func (s *Service) enrichWithPineify(ctx context.Context, assets map[string]*asse
 	s.logger().Infof("📊 Pineify enrichment complete: %d/%d calls used", used, budget)
 }
 
-// mappableBoard returns the xyz: TradeFi (hip3_perp) symbols that map to a
-// Pineify ticker, ordered best-first by their composite score so the priority
-// tier enriches the board's strongest candidates. Core-perp crypto is handled
-// separately via cryptoMajorBoard (TA-only); only the TradeFi board is
-// enumerated here so the long tail does not crowd the US-stock priority tier.
+// mappableBoard returns the hip3_perp (TradeFi/US-equity) symbols that map to a
+// Pineify ticker, ordered best-first by composite score so the strongest
+// candidates are enriched first. Core-perp crypto majors are NOT excluded from
+// enrichment — they are enumerated separately by cryptoMajorBoard (TA-only) and
+// receive a reserved budget floor (see cryptoFloorBudget) so a small budget
+// cannot starve them. This function covers only the TradeFi board.
 func (s *Service) mappableBoard(assets map[string]*asset) []string {
 	var out []string
 	for _, a := range assets {
@@ -222,6 +199,76 @@ func (s *Service) mappableBoard(assets map[string]*asset) []string {
 		return assets[out[i]].Score > assets[out[j]].Score
 	})
 	return out
+}
+
+// cryptoFloorBudget returns how many crypto-major enrichment calls are reserved
+// so the crypto tier is never starved by the TradeFi top-K (the largest budget
+// consumer). It is at most 5 and at most a third of the per-ingest budget, so it
+// adapts to the budget while keeping TradeFi the higher-value priority.
+func cryptoFloorBudget(budget int) int {
+	floor := budget / 3
+	if floor > 5 {
+		floor = 5
+	}
+	if floor < 0 {
+		floor = 0
+	}
+	return floor
+}
+
+// buildEnrichmentOrder assembles the ordered list of symbols to enrich, in the
+// order they should consume the per-ingest budget. Engine candidates come
+// first (highest priority — what the AI actually judges this cycle). A reserved
+// crypto floor is placed next so a small budget cannot starve the crypto-major
+// tier, followed by the strongest TradeFi (hip3_perp) by score, then the
+// remaining crypto majors, then the TradeFi long tail. callers must pass the
+// priority list pre-filtered to mappable symbols.
+func buildEnrichmentOrder(priority, cryptoMappable, mappable, byScore []string, budget int) []string {
+	floor := cryptoFloorBudget(budget)
+	var ordered []string
+	seen := make(map[string]bool)
+	add := func(sym string) {
+		if !seen[sym] {
+			ordered = append(ordered, sym)
+			seen[sym] = true
+		}
+	}
+	// 1. Engine's current candidate set (highest priority).
+	for _, sym := range priority {
+		add(sym)
+	}
+	// 2. Reserved crypto floor: top crypto majors placed before the TradeFi
+	//    top-K so a small budget cannot starve the crypto tier.
+	reserved := 0
+	for _, sym := range cryptoMappable {
+		if reserved >= floor {
+			break
+		}
+		if !seen[sym] {
+			add(sym)
+			reserved++
+		}
+	}
+	// 3. Strongest TradeFi (hip3_perp) by score (top-K).
+	tradefiTop := 0
+	for _, sym := range byScore {
+		if tradefiTop >= 10 {
+			break
+		}
+		if !seen[sym] {
+			add(sym)
+			tradefiTop++
+		}
+	}
+	// 4. Remaining crypto majors (beyond the floor).
+	for _, sym := range cryptoMappable {
+		add(sym)
+	}
+	// 5. Remaining TradeFi (round-robin) to fill the budget.
+	for _, sym := range mappable {
+		add(sym)
+	}
+	return ordered
 }
 
 // cryptoMajorBoard returns the core_perp crypto-major symbols that map to a

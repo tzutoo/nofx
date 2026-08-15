@@ -140,38 +140,102 @@ func TestEnrichCryptoNonMajorNotMappable(t *testing.T) {
 // Rate limiter
 // ---------------------------------------------------------------------------
 
-func TestTokenBucketAcquire(t *testing.T) {
-	b := newTokenBucket(5) // 5/min
+func TestTokenBucketPacesCalls(t *testing.T) {
+	b := newTokenBucket(60) // 60/min -> 1s spacing; starts empty (no pre-fill)
 	ctx := context.Background()
-	// Burst of 5 should be immediate.
 	start := time.Now()
-	for i := 0; i < 5; i++ {
-		if err := b.acquire(ctx); err != nil {
-			t.Fatalf("unexpected acquire error: %v", err)
-		}
-	}
-	if time.Since(start) > time.Second {
-		t.Fatalf("burst of 5 should be near-instant, took %v", time.Since(start))
-	}
-	// 6th should wait ~ a refill period.
-	start = time.Now()
 	if err := b.acquire(ctx); err != nil {
-		t.Fatalf("6th acquire errored: %v", err)
+		t.Fatalf("unexpected acquire error: %v", err)
 	}
-	if time.Since(start) < 500*time.Millisecond {
-		t.Fatalf("6th acquire should have waited for a refill, took %v", time.Since(start))
+	if err := b.acquire(ctx); err != nil {
+		t.Fatalf("unexpected acquire error: %v", err)
+	}
+	// Back-to-back acquires must be spaced, never fired instantly — that burst
+	// is what tripped Pineify's wall-clock limit.
+	if elapsed := time.Since(start); elapsed < 900*time.Millisecond {
+		t.Fatalf("back-to-back acquires should be paced ~1s apart (rate=60), took %v", elapsed)
+	}
+}
+
+// TestTokenBucketFullDoesNotBurst verifies that even a bucket which has idled
+// back to full capacity still spaces calls, so a later ingest cannot burst past
+// the per-minute rate either.
+func TestTokenBucketFullDoesNotBurst(t *testing.T) {
+	b := newTokenBucket(60) // 1s spacing
+	b.mu.Lock()
+	b.tokens = b.capacity // simulate a fully-refilled (idled) bucket
+	b.mu.Unlock()
+	ctx := context.Background()
+	if err := b.acquire(ctx); err != nil {
+		t.Fatalf("first acquire errored: %v", err)
+	}
+	// The second grant must still wait for minSpacing even though tokens remain.
+	start := time.Now()
+	if err := b.acquire(ctx); err != nil {
+		t.Fatalf("second acquire errored: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 900*time.Millisecond {
+		t.Fatalf("full-capacity bucket should still space calls ~1s, took %v", elapsed)
 	}
 }
 
 func TestTokenBucketCancellation(t *testing.T) {
-	b := newTokenBucket(1)
+	b := newTokenBucket(60) // 1s spacing
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if err := b.acquire(ctx); err != nil {
-		t.Fatalf("first acquire errored: %v", err)
-	}
+	// Empty (un-pre-filled) bucket blocks; a short ctx must abort the acquire.
 	if err := b.acquire(ctx); err != context.DeadlineExceeded {
-		t.Fatalf("second acquire should have been cancelled, got %v", err)
+		t.Fatalf("acquire with no token and short ctx should be cancelled, got %v", err)
+	}
+}
+
+func TestCryptoFloorBudget(t *testing.T) {
+	cases := map[int]int{
+		1:   0,
+		2:   0,
+		3:   1,
+		5:   1,
+		6:   2,
+		9:   3,
+		15:  5,
+		20:  5,
+		30:  5,
+		100: 5,
+	}
+	for budget, want := range cases {
+		if got := cryptoFloorBudget(budget); got != want {
+			t.Errorf("cryptoFloorBudget(%d) = %d, want %d", budget, got, want)
+		}
+	}
+}
+
+// TestCryptoFloorReservedInOrder verifies the crypto floor is placed ahead of
+// the TradeFi top-K, so a small budget (which the TradeFi top-K alone would
+// exhaust) cannot starve the crypto-major tier.
+func TestCryptoFloorReservedInOrder(t *testing.T) {
+	crypto := []string{"BTC", "ETH", "SOL", "XRP"}
+	mappable := []string{"xyz:NVDA", "xyz:AAPL", "xyz:MSFT"}
+	byScore := []string{"xyz:NVDA", "xyz:AAPL", "xyz:MSFT"}
+
+	// Small budget 6 -> floor = min(5, 6/3) = 2 crypto majors reserved.
+	ordered := buildEnrichmentOrder(nil, crypto, mappable, byScore, 6)
+	pos := func(s string) int {
+		for i, x := range ordered {
+			if x == s {
+				return i
+			}
+		}
+		return -1
+	}
+	if pos("BTC") < 0 || pos("ETH") < 0 {
+		t.Fatalf("crypto floor majors missing from order: %v", ordered)
+	}
+	// The floor must come ahead of the TradeFi top-K so the budget reaches it.
+	if pos("BTC") > pos("xyz:NVDA") {
+		t.Errorf("crypto floor (BTC) should be ordered before TradeFi top-K, got %v", ordered)
+	}
+	if pos("ETH") > pos("xyz:NVDA") {
+		t.Errorf("crypto floor (ETH) should be ordered before TradeFi top-K, got %v", ordered)
 	}
 }
 
@@ -298,6 +362,43 @@ func TestEnrichSymbolWithMCP(t *testing.T) {
 	if snap.Rating.Action != "buy" {
 		t.Errorf("rating action = %q, want buy", snap.Rating.Action)
 	}
+}
+
+// TestEnrichWithPineifyCryptoCoverage runs the full enrichment pipeline with a
+// mixed TradeFi + crypto board and verifies crypto majors are actually enriched
+// (not starved) while TradeFi still gets full coverage.
+func TestEnrichWithPineifyCryptoCoverage(t *testing.T) {
+	srv := newFakeMCP()
+	ts := newTestHTTPServer(srv.handle())
+	defer ts.Close()
+	cfg := &Config{
+		PineifyMCPToken:      "test-token",
+		PineifyBaseURL:       ts.URL,
+		PineifyRatePerMinute: 30, // budget 30, crypto floor 5; min spacing 2s
+	}
+	s := &Service{cfg: cfg, httpClient: ts.Client()}
+	assets := map[string]*asset{
+		"xyz:NVDA": {Symbol: "xyz:NVDA", MarketType: "hip3_perp", Score: 90},
+		"BTC":      {Symbol: "BTC", MarketType: "core_perp", Score: 80},
+		"ETH":      {Symbol: "ETH", MarketType: "core_perp", Score: 70},
+	}
+	s.enrichWithPineify(context.Background(), assets)
+	if got := coverageOf(assets["BTC"]); got != "ta" {
+		t.Errorf("BTC pineify coverage = %q, want ta (crypto not starved)", got)
+	}
+	if got := coverageOf(assets["ETH"]); got != "ta" {
+		t.Errorf("ETH pineify coverage = %q, want ta (crypto not starved)", got)
+	}
+	if got := coverageOf(assets["xyz:NVDA"]); got != "full" {
+		t.Errorf("NVDA pineify coverage = %q, want full (TradeFi still enriched)", got)
+	}
+}
+
+func coverageOf(a *asset) string {
+	if a == nil || a.Pineify == nil {
+		return ""
+	}
+	return a.Pineify.Coverage
 }
 
 func TestEnrichSymbolNotMappable(t *testing.T) {
