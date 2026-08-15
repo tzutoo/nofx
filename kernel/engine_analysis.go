@@ -12,6 +12,30 @@ import (
 	"time"
 )
 
+// isTransientEmptyContentError reports whether an AI-call error is the transient
+// "empty content" failure where a reasoning model burned its output budget on
+// reasoning_content and never emitted a content delta. Only this case is worth
+// retrying (it usually succeeds on the next attempt); other AI errors fail fast.
+func isTransientEmptyContentError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "no content received") ||
+		strings.Contains(s, "SSE empty") ||
+		strings.Contains(s, "empty content") ||
+		strings.Contains(s, "upstream_empty_output")
+}
+
+// emptyContentRetryWait returns a short backoff for empty-content retries so a
+// reasoning model that just hit its budget wall has a moment to reset.
+func emptyContentRetryWait(attempt int) time.Duration {
+	if attempt <= 0 {
+		return time.Second
+	}
+	return 3 * time.Second
+}
+
 // ============================================================================
 // Pre-compiled regular expressions (performance optimization)
 // ============================================================================
@@ -110,12 +134,32 @@ func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *S
 	// 3. Build User Prompt using strategy engine
 	userPrompt := engine.BuildUserPrompt(ctx)
 
-	// 4. Call AI API
-	aiCallStart := time.Now()
-	aiResponse, err := mcpClient.CallWithMessages(systemPrompt, userPrompt)
-	aiCallDuration := time.Since(aiCallStart)
-	if err != nil {
-		return nil, fmt.Errorf("AI API call failed: %w", err)
+	// 4. Call AI API. Reasoning models intermittently burn their entire output
+// budget on `reasoning_content` and never emit a `content` delta, so the
+// stream/SSE parsers return empty content ("no content received"). That is a
+// transient, retryable failure — a retry usually takes the short-reasoning
+// path and succeeds. Only retry this specific empty-content case; other AI
+// errors (auth, rate-limit, 5xx) fail fast to avoid duplicate x402 payments.
+	var aiResponse string
+	var aiCallDuration time.Duration
+	var aiErr error
+	const maxEmptyContentRetries = 2
+	for attempt := 0; attempt <= maxEmptyContentRetries; attempt++ {
+		aiCallStart := time.Now()
+		aiResponse, aiErr = mcpClient.CallWithMessages(systemPrompt, userPrompt)
+		aiCallDuration = time.Since(aiCallStart)
+		if aiErr == nil {
+			break
+		}
+		if !isTransientEmptyContentError(aiErr) || attempt == maxEmptyContentRetries {
+			return nil, fmt.Errorf("AI API call failed: %w", aiErr)
+		}
+		logger.Warnf("⚠️  AI call returned empty content (transient reasoning truncation), retrying (%d/%d) after %v: %v",
+			attempt+1, maxEmptyContentRetries, emptyContentRetryWait(attempt), aiErr)
+		time.Sleep(emptyContentRetryWait(attempt))
+	}
+	if aiErr != nil {
+		return nil, fmt.Errorf("AI API call failed: %w", aiErr)
 	}
 
 	// 5. Parse AI response
