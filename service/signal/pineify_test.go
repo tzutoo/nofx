@@ -87,7 +87,7 @@ func TestEnrichCryptoMajorTAOnly(t *testing.T) {
 	}
 	s := &Service{cfg: cfg, httpClient: ts.Client()}
 	limiter := newTokenBucket(100)
-	snap, calls := s.enrichSymbol(ctx, client, limiter, "BTC", "core_perp", 10)
+	snap, calls := s.enrichSymbol(ctx, client, limiter, "BTC", "core_perp", 10, time.Time{})
 	if snap == nil {
 		t.Fatal("snapshot is nil")
 	}
@@ -124,7 +124,7 @@ func TestEnrichCryptoNonMajorNotMappable(t *testing.T) {
 	s := &Service{cfg: cfg}
 	client := newPineifyClient(cfg, nil, nil)
 	limiter := newTokenBucket(10)
-	snap, calls := s.enrichSymbol(context.Background(), client, limiter, "SOMELONGTAIL", "core_perp", 10)
+	snap, calls := s.enrichSymbol(context.Background(), client, limiter, "SOMELONGTAIL", "core_perp", 10, time.Time{})
 	if snap == nil || snap.Error == "" {
 		t.Fatalf("expected error for non-major crypto, got %+v", snap)
 	}
@@ -252,6 +252,9 @@ type fakeMCP struct {
 	taJSON    string
 	events    string
 	rating    string
+	// delay, when > 0, makes the fake Pineify server sleep before each reply so
+	// tests can exercise the wall-clock enrichment deadline (F8).
+	delay time.Duration
 }
 
 func newFakeMCP() *fakeMCP {
@@ -275,6 +278,10 @@ func (f *fakeMCP) handle() http.HandlerFunc {
 		f.mu.Lock()
 		f.calls[req.Method]++
 		f.mu.Unlock()
+
+		if f.delay > 0 {
+			time.Sleep(f.delay)
+		}
 
 		switch req.Method {
 		case "initialize":
@@ -343,7 +350,7 @@ func TestEnrichSymbolWithMCP(t *testing.T) {
 	}
 	s := &Service{cfg: cfg, httpClient: ts.Client()}
 	limiter := newTokenBucket(100)
-	snap, _ := s.enrichSymbol(ctx, client, limiter, "xyz:NVDA", "hip3_perp", 10)
+	snap, _ := s.enrichSymbol(ctx, client, limiter, "xyz:NVDA", "hip3_perp", 10, time.Time{})
 	if snap == nil {
 		t.Fatal("snapshot is nil")
 	}
@@ -406,7 +413,7 @@ func TestEnrichSymbolNotMappable(t *testing.T) {
 	s := &Service{cfg: cfg}
 	client := newPineifyClient(cfg, nil, nil)
 	limiter := newTokenBucket(10)
-	snap, _ := s.enrichSymbol(context.Background(), client, limiter, "xyz:SP500", "hip3_perp", 10)
+	snap, _ := s.enrichSymbol(context.Background(), client, limiter, "xyz:SP500", "hip3_perp", 10, time.Time{})
 	if snap == nil || snap.Error == "" {
 		t.Fatalf("expected error for non-mappable symbol, got %+v", snap)
 	}
@@ -424,7 +431,7 @@ func TestEnrichSymbolDegraded(t *testing.T) {
 	// cancelled context instead.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	snap, _ := s.enrichSymbol(ctx, client, limiter, "xyz:NVDA", "hip3_perp", 10)
+	snap, _ := s.enrichSymbol(ctx, client, limiter, "xyz:NVDA", "hip3_perp", 10, time.Time{})
 	if snap == nil || snap.Coverage != "" {
 		t.Fatalf("expected degraded (no coverage) on cancellation, got %+v", snap)
 	}
@@ -663,5 +670,132 @@ func TestSetPriorityClears(t *testing.T) {
 	s.SetPriority(nil)
 	if len(s.Priority()) != 0 {
 		t.Fatalf("priority should be cleared, got %v", s.Priority())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// F6: priority tier is bounded so crypto/TradeFi tiers are not starved, and
+// the score-ordered tiers order by a real composite (not inert zero Scores)
+// ---------------------------------------------------------------------------
+
+func TestEnrichmentOrderPriorityCapped(t *testing.T) {
+	priority := []string{"xyz:A", "xyz:B", "xyz:C", "xyz:D", "xyz:E", "xyz:F", "xyz:G", "xyz:H", "xyz:I", "xyz:J", "xyz:K", "xyz:L"}
+	crypto := []string{"BTC", "ETH", "SOL"}
+	mappable := []string{"xyz:NVDA", "xyz:AAPL"}
+	byScore := []string{"xyz:NVDA", "xyz:AAPL"}
+	budget := 6
+
+	ordered := buildEnrichmentOrder(priority, crypto, mappable, byScore, budget)
+	pos := func(s string) int {
+		for i, x := range ordered {
+			if x == s {
+				return i
+			}
+		}
+		return -1
+	}
+
+	// The priority tier must be capped at K = min(10, 6) = 6, not all 12, so
+	// the first 6 slots are exactly the first 6 engine candidates.
+	for i := 0; i < 6; i++ {
+		if p := pos(priority[i]); p != i {
+			t.Errorf("priority candidate %q should be at slot %d, got %d (%v)", priority[i], i, p, ordered)
+		}
+	}
+	// The crypto floor must not be starved by a large candidate set.
+	if pos("BTC") < 0 || pos("ETH") < 0 {
+		t.Fatalf("crypto floor missing from order: %v", ordered)
+	}
+	// Candidates beyond the cap must not preempt the crypto floor.
+	for _, sym := range priority[6:] {
+		if p := pos(sym); p != -1 && p < pos("BTC") {
+			t.Errorf("candidate %q beyond cap should be ordered after the crypto floor, got slot %d (%v)", sym, p, ordered)
+		}
+	}
+}
+
+// TestBoardScoreOrdering verifies the score-ordered tiers order by a real
+// recomputed composite (F6): on the fresh local assets map every a.Score is 0,
+// so ordering must come from cohortComposite (boardScore), not the inert field.
+func TestBoardScoreOrdering(t *testing.T) {
+	s := &Service{}
+	assets := map[string]*asset{
+		"xyz:NVDA": {Symbol: "xyz:NVDA", MarketType: "hip3_perp", Mark: 120, PrevDay: 100, Funding: 0.001},
+		"xyz:AAPL": {Symbol: "xyz:AAPL", MarketType: "hip3_perp", Mark: 110, PrevDay: 100, Funding: 0.001},
+		"xyz:MSFT": {Symbol: "xyz:MSFT", MarketType: "hip3_perp", Mark: 95, PrevDay: 100, Funding: -0.001},
+		"xyz:MU":   {Symbol: "xyz:MU", MarketType: "hip3_perp", Mark: 100, PrevDay: 100, Funding: -0.002},
+	}
+	score := s.boardScore(assets)
+	if score["xyz:NVDA"] <= score["xyz:AAPL"] {
+		t.Errorf("NVDA (highest 24h delta) should rank above AAPL by composite: %v", score)
+	}
+	out := s.mappableBoard(assets, score)
+	if len(out) != 4 {
+		t.Fatalf("mappableBoard len = %d, want 4", len(out))
+	}
+	for i := 1; i < len(out); i++ {
+		if score[out[i-1]] < score[out[i]] {
+			t.Errorf("mappableBoard not sorted desc by composite: %v (scores %v)", out, score)
+			break
+		}
+	}
+	if out[0] != "xyz:NVDA" {
+		t.Errorf("strongest by composite should be first, got %v", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// F8: wall-clock deadline bounds synchronous enrichment
+// ---------------------------------------------------------------------------
+
+// TestEnrichSymbolDeadlineStops verifies enrichSymbol stops between tiers once
+// the wall-clock deadline has passed, without making any further calls.
+func TestEnrichSymbolDeadlineStops(t *testing.T) {
+	cfg := &Config{PineifyMCPToken: "x", PineifyRatePerMinute: 100}
+	s := &Service{cfg: cfg}
+	client := newPineifyClient(cfg, nil, nil)
+	limiter := newTokenBucket(100)
+	// stopAt already in the past => must stop before any Pineify call.
+	snap, calls := s.enrichSymbol(context.Background(), client, limiter, "xyz:NVDA", "hip3_perp", 10, time.Now().Add(-time.Second))
+	if calls != 0 {
+		t.Errorf("calls = %d, want 0 (deadline already passed)", calls)
+	}
+	if snap == nil || snap.Error != "deadline reached" {
+		t.Errorf("snapshot = %+v, want Error=deadline reached", snap)
+	}
+	if snap.Coverage != "" {
+		t.Errorf("coverage = %q, want empty", snap.Coverage)
+	}
+}
+
+// TestEnrichmentStopsAtDeadline runs the full pipeline with a very short
+// deadline and a slow fake Pineify, and verifies the loop stops early instead
+// of consuming the whole budget.
+func TestEnrichmentStopsAtDeadline(t *testing.T) {
+	srv := newFakeMCP()
+	srv.delay = 30 * time.Millisecond
+	ts := newTestHTTPServer(srv.handle())
+	defer ts.Close()
+	cfg := &Config{
+		PineifyMCPToken:      "test-token",
+		PineifyBaseURL:       ts.URL,
+		PineifyRatePerMinute: 120, // ~0.5s spacing; latency is dominated by the fake's delay
+	}
+	// A ~1ms deadline forces the loop to stop almost immediately.
+	s := &Service{cfg: cfg, httpClient: ts.Client(), pineifyDeadline: time.Millisecond}
+	assets := map[string]*asset{
+		"xyz:NVDA": {Symbol: "xyz:NVDA", MarketType: "hip3_perp", Score: 90},
+		"xyz:AAPL": {Symbol: "xyz:AAPL", MarketType: "hip3_perp", Score: 80},
+		"xyz:MU":   {Symbol: "xyz:MU", MarketType: "hip3_perp", Score: 70},
+	}
+	s.enrichWithPineify(context.Background(), assets)
+
+	srv.mu.Lock()
+	taCalls := srv.toolCalls["get-technical-analysis-snapshot"]
+	srv.mu.Unlock()
+	// 3 symbols × (TA+events+rating) would be many calls if the whole budget
+	// were consumed; the deadline must stop the loop well short of that.
+	if taCalls >= 3 {
+		t.Errorf("deadline not enforced: %d TA calls made, want < 3 (loop should stop early)", taCalls)
 	}
 }

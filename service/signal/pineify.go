@@ -138,11 +138,16 @@ func (s *Service) enrichWithPineify(ctx context.Context, assets map[string]*asse
 	//      starved by the TradeFi top-K, the largest budget consumer.
 	//   3. The strongest TradeFi (hip3_perp) mappable items by score (top-K).
 	//   4. The remaining crypto majors and TradeFi long tail to fill the budget.
-	mappable := s.mappableBoard(assets)
-	cryptoMappable := s.cryptoMajorBoard(assets)
+	// Compute a real per-symbol composite ordering score on the fresh local
+	// assets map, where every a.Score is still 0 (Rank runs on the swapped
+	// snapshot later in the cycle). Without this the score-ordered tiers would
+	// sort equal zeroes into inert map-iteration order (F6).
+	score := s.boardScore(assets)
+	mappable := s.mappableBoard(assets, score)
+	cryptoMappable := s.cryptoMajorBoard(assets, score)
 	byScore := make([]string, len(mappable))
 	copy(byScore, mappable)
-	sort.Slice(byScore, func(i, j int) bool { return assets[byScore[i]].Score > assets[byScore[j]].Score })
+	sort.Slice(byScore, func(i, j int) bool { return score[byScore[i]] > score[byScore[j]] })
 
 	priority := s.Priority()
 	// Pre-filter engine candidates to the mappable subset (crypto or TradeFi);
@@ -164,14 +169,25 @@ func (s *Service) enrichWithPineify(ctx context.Context, assets map[string]*asse
 		}
 	}
 	ordered := buildEnrichmentOrder(prioMappable, cryptoMappable, mappable, byScore, budget)
+	// Wall-clock deadline: enrichment is synchronous inside Ingest, so cap the
+	// total spend so a slow Pineify cannot push the snapshot swap past the
+	// cadence (F8). The token-bucket pacing already spaces calls; this is the
+	// additional hard stop. The same stopAt is threaded into enrichSymbol so a
+	// single slow symbol also bails between tiers.
+	start := time.Now()
+	stopAt := start.Add(s.pineifyEnrichmentDeadline())
 	// consumes budget; the remaining budget is threaded in so we never overshoot.
 	used := 0
 	for _, sym := range ordered {
 		if used >= budget {
 			break
 		}
+		if time.Now().After(stopAt) {
+			s.logger().Infof("⏱  Pineify enrichment deadline reached after %d/%d calls; stopping", used, budget)
+			break
+		}
 		a := assets[sym]
-		snap, calls := s.enrichSymbol(ctx, client, limiter, sym, a.MarketType, budget-used)
+		snap, calls := s.enrichSymbol(ctx, client, limiter, sym, a.MarketType, budget-used, stopAt)
 		a.Pineify = snap
 		s.logger().Infof("  pineify %s -> coverage=%q bias=%q calls=%d", sym, snap.Coverage, snap.Bias, calls)
 		used += calls
@@ -185,7 +201,7 @@ func (s *Service) enrichWithPineify(ctx context.Context, assets map[string]*asse
 // enrichment — they are enumerated separately by cryptoMajorBoard (TA-only) and
 // receive a reserved budget floor (see cryptoFloorBudget) so a small budget
 // cannot starve them. This function covers only the TradeFi board.
-func (s *Service) mappableBoard(assets map[string]*asset) []string {
+func (s *Service) mappableBoard(assets map[string]*asset, score map[string]float64) []string {
 	var out []string
 	for _, a := range assets {
 		if a.MarketType != "hip3_perp" {
@@ -196,7 +212,7 @@ func (s *Service) mappableBoard(assets map[string]*asset) []string {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return assets[out[i]].Score > assets[out[j]].Score
+		return score[out[i]] > score[out[j]]
 	})
 	return out
 }
@@ -233,9 +249,20 @@ func buildEnrichmentOrder(priority, cryptoMappable, mappable, byScore []string, 
 			seen[sym] = true
 		}
 	}
-	// 1. Engine's current candidate set (highest priority).
+	// 1. Engine's current candidate set (highest priority — what the AI actually
+	//    judges this cycle), capped at K = min(10, budget) so a large candidate
+	//    set cannot starve the crypto floor / TradeFi tiers (F6).
+	k := budget
+	if k > 10 {
+		k = 10
+	}
+	added := 0
 	for _, sym := range priority {
+		if added >= k {
+			break
+		}
 		add(sym)
+		added++
 	}
 	// 2. Reserved crypto floor: top crypto majors placed before the TradeFi
 	//    top-K so a small budget cannot starve the crypto tier.
@@ -276,7 +303,7 @@ func buildEnrichmentOrder(priority, cryptoMappable, mappable, byScore []string, 
 // ordered best-first by composite score. Crypto majors are enriched with TA
 // ONLY — events and rating are US-equity centric and Pineify returns nothing
 // for them, so they never consume a budget slot.
-func (s *Service) cryptoMajorBoard(assets map[string]*asset) []string {
+func (s *Service) cryptoMajorBoard(assets map[string]*asset, score map[string]float64) []string {
 	var out []string
 	for _, a := range assets {
 		if a.MarketType != "core_perp" {
@@ -287,15 +314,49 @@ func (s *Service) cryptoMajorBoard(assets map[string]*asset) []string {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return assets[out[i]].Score > assets[out[j]].Score
+		return score[out[i]] > score[out[j]]
 	})
 	return out
+}
+
+// boardScore computes a real per-symbol composite ordering score over the given
+// cross-section. enrichment runs on a fresh local assets map where every
+// a.Score is still 0 (Rank runs on the swapped snapshot later), so the
+// "strongest first" tiers must order by a recomputed composite rather than the
+// inert zero Score (F6). Reuses the read-only cohortComposite recompute pattern
+// (O(cohort) per symbol) so no shared snapshot pointer is mutated.
+func (s *Service) boardScore(assets map[string]*asset) map[string]float64 {
+	score := make(map[string]float64, len(assets))
+	for sym, a := range assets {
+		score[sym] = s.cohortComposite(assets, a)
+	}
+	return score
+}
+
+// pineifyEnrichmentDeadline is the total wall-clock bound on synchronous
+// enrichment inside Ingest (F8). It is a fraction of the ingest interval so a
+// slow Pineify cannot push the snapshot swap past the cadence; floored at 60s
+// so a very short interval does not collapse the enrichment window entirely.
+// s.pineifyDeadline, when > 0, overrides this for tests.
+func (s *Service) pineifyEnrichmentDeadline() time.Duration {
+	if s.pineifyDeadline > 0 {
+		return s.pineifyDeadline
+	}
+	iv := s.cfg.Interval
+	if iv <= 0 {
+		iv = 3 * time.Minute
+	}
+	d := iv / 2
+	if d < 60*time.Second {
+		d = 60 * time.Second
+	}
+	return d
 }
 
 // enrichSymbol fetches the Pineify overlay for one symbol, applying tool
 // priority and degrading gracefully on any failure. It returns the snapshot and
 // the number of Pineify calls actually made (each limiter.acquire = 1 call).
-func (s *Service) enrichSymbol(ctx context.Context, client *pineifyClient, limiter *tokenBucket, sym, marketType string, budgetLeft int) (*PineifySnapshot, int) {
+func (s *Service) enrichSymbol(ctx context.Context, client *pineifyClient, limiter *tokenBucket, sym, marketType string, budgetLeft int, stopAt time.Time) (*PineifySnapshot, int) {
 	snap := &PineifySnapshot{FetchedAt: time.Now()}
 	base := baseOf(sym)
 	crypto := marketType == "core_perp"
@@ -317,11 +378,19 @@ func (s *Service) enrichSymbol(ctx context.Context, client *pineifyClient, limit
 	}
 	calls := 0
 
+	// Wall-clock hard stop (F8): bail between tiers once the enrichment deadline
+	// has passed (a zero stopAt disables the check).
+	stop := func() bool { return !stopAt.IsZero() && time.Now().After(stopAt) }
+
 	// Tier 1: technicals. Events are skipped for crypto (get-stock-event-context
 	// is US-equity centric; Pineify returns nothing for crypto). Stop if no
 	// budget remains.
 	if budgetLeft <= 0 {
 		snap.Error = "budget exhausted"
+		return snap, calls
+	}
+	if stop() {
+		snap.Error = "deadline reached"
 		return snap, calls
 	}
 	if err := limiter.acquire(ctx); err != nil {
@@ -345,6 +414,10 @@ func (s *Service) enrichSymbol(ctx context.Context, client *pineifyClient, limit
 			snap.Error = "budget exhausted"
 			return snap, calls
 		}
+		if stop() {
+			snap.Error = "deadline reached"
+			return snap, calls
+		}
 		if err := limiter.acquire(ctx); err != nil {
 			snap.Error = err.Error()
 			return snap, calls
@@ -362,6 +435,10 @@ func (s *Service) enrichSymbol(ctx context.Context, client *pineifyClient, limit
 
 	// Tier 2: rating (US stocks only).
 	if !crypto && budgetLeft > calls {
+		if stop() {
+			snap.Error = "deadline reached"
+			return snap, calls
+		}
 		if err := limiter.acquire(ctx); err != nil {
 			snap.Error = err.Error()
 			return snap, calls

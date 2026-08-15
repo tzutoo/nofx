@@ -52,6 +52,9 @@ type Service struct {
 	// actively evaluating). Enrichment prioritizes these so candidates carry
 	// fresh Pineify data at decision time. Thread-safe; set via SetPriority.
 	prioritySymbols []string
+	// pineifyDeadline is a test override for the synchronous-enrichment
+	// wall-clock bound (F8). Zero computes it from the ingest interval.
+	pineifyDeadline time.Duration
 }
 
 // NewService constructs a Service from config.
