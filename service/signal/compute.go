@@ -435,13 +435,103 @@ func (s *Service) Heatmap(symbol string) (json.RawMessage, error) {
 
 // SignalLab builds the per-symbol signal-lab payload matching the
 // dimensions[] contract the vergex formatter parses.
+// flowSignalRows reduces a symbol's real Hyperliquid WS taker-flow and
+// order-book depth into up to two Signal Lab dimension rows, computed on read
+// with read-time decay (frozen via s.now() in tests). A stale or absent flow
+// (f == nil, or all-decayed totals <= 0) yields NO rows: omission is honest
+// and never emits a misleading "balanced" zero. Direction tokens match the
+// exact bullish/bearish/neutral strings the engine branches on.
+func (s *Service) flowSignalRows(f *SymbolFlow, now time.Time) []map[string]interface{} {
+	if f == nil {
+		return nil
+	}
+	var rows []map[string]interface{}
+
+	// Taker Flow: is the tape being lifted (aggressive buys, side B) or hit
+	// (aggressive sells, side A)? Freshness is encoded in the read: decayedBin
+	// returns 0 past FlowMaxAge, so totF > 0 implies fresh flow.
+	sumBuy, sumSell := 0.0, 0.0
+	for d := range f.buyByBin {
+		sumBuy += s.decayedBin(f.buyByBin, d, now)
+	}
+	for d := range f.sellByBin {
+		sumSell += s.decayedBin(f.sellByBin, d, now)
+	}
+	if totF := sumBuy + sumSell; totF > 0 {
+		ratio := sumBuy / totF
+		dir := "neutral"
+		switch {
+		case ratio >= 0.55:
+			dir = "bullish"
+		case ratio <= 0.45:
+			dir = "bearish"
+		}
+		mag := math.Abs(ratio-0.5) * 2
+		strength := "low"
+		switch {
+		case mag >= 0.5:
+			strength = "strong"
+		case mag >= 0.3:
+			strength = "medium"
+		}
+		rows = append(rows, map[string]interface{}{
+			"family":    "Flow",
+			"label":     "Taker Flow",
+			"direction": dir,
+			"strength":  strength,
+			"detail":    fmt.Sprintf("taker buy %.0f$ vs sell %.0f$ (ratio %.2f)", sumBuy, sumSell, ratio),
+		})
+	}
+
+	// Order-Book Imbalance: near-touch resting depth (bidTotal/askTotal).
+	// Thin support or one-sided ask pressure is a directional liquidity hint.
+	if denom := f.bidTotal + f.askTotal; denom > 0 {
+		imb := (f.bidTotal - f.askTotal) / denom
+		dir := "neutral"
+		switch {
+		case imb > 0.10:
+			dir = "bullish"
+		case imb < -0.10:
+			dir = "bearish"
+		}
+		strength := "low"
+		switch m := math.Abs(imb); {
+		case m >= 0.4:
+			strength = "strong"
+		case m >= 0.2:
+			strength = "medium"
+		}
+		rows = append(rows, map[string]interface{}{
+			"family":    "Liquidity",
+			"label":     "Order-Book Imbalance",
+			"direction": dir,
+			"strength":  strength,
+			"detail":    fmt.Sprintf("bid depth %.0f$ vs ask %.0f$ (imbalance %+.2f)", f.bidTotal, f.askTotal, imb),
+		})
+	}
+
+	return rows
+}
+
 func (s *Service) SignalLab(symbol string) (json.RawMessage, error) {
 	a, ok := s.assetFor(symbol)
 	if !ok {
 		return nil, errMarketNotFound
 	}
 	assets, _, _, _ := s.Snapshot()
-	dimensions := []map[string]interface{}{
+	// Real Hyperliquid WS flow is keyed by the canonical coin id == a.Symbol
+	// ("BTC", "xyz:NVDA"). A short RLock read keeps the flow map consistent;
+	// nil/missing flow degrades to no rows. Flow rows are PREPENDED (flow-first)
+	// so the fixed 3 core + 2 flow fit inside the formatter's 8-row cap and
+	// informational Pineify rows (appended last) are never the ones cut.
+	s.mu.RLock()
+	f := s.flow[a.Symbol]
+	now := s.now()
+	s.mu.RUnlock()
+	flowRows := s.flowSignalRows(f, now)
+	dimensions := make([]map[string]interface{}, 0, 8)
+	dimensions = append(dimensions, flowRows...)
+	dimensions = append(dimensions, []map[string]interface{}{
 		{
 			"family":    "Market Structure",
 			"label":     "Point of Control",
@@ -463,7 +553,7 @@ func (s *Service) SignalLab(symbol string) (json.RawMessage, error) {
 			"strength":  strengthWord(a.Funding, 0),
 			"detail":    "Funding rate × open interest exposure.",
 		},
-	}
+	}...)
 	// Append Pineify overlay rows (rate-limited enrichment, when available).
 	// Respects the formatter's 8-row cap: 3 core rows + up to 3 Pineify rows.
 	if p := a.Pineify; p != nil && p.Coverage != "" {

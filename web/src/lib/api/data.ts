@@ -152,7 +152,8 @@ export interface VergexSignalLabData {
   dimensions?: VergexSignalDimension[]
   levels?: VergexSignalLevels
   metrics?: VergexSignalMetrics
-  compositeZ?: number
+  compositeZ?: number | string
+  score?: number | string
   rank?: number
   universeSize?: number
 }

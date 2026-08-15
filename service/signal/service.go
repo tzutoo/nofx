@@ -55,15 +55,36 @@ type Service struct {
 	// pineifyDeadline is a test override for the synchronous-enrichment
 	// wall-clock bound (F8). Zero computes it from the ingest interval.
 	pineifyDeadline time.Duration
+
+	// flow holds the per-symbol taker-flow + order-book liquidity accumulator
+	// fed by the real Hyperliquid WS client (hlws.go). It is keyed by the same
+	// asset.Symbol coin id and OUTLIVES snapshot swaps (Ingest replaces
+	// s.assets wholesale but must NOT clear s.flow). Read by Heatmap() under
+	// RLock; written by the WS reader under Lock.
+	flow map[string]*SymbolFlow
+	// now is the clock used by read-time flow decay and freshness. Defaults to
+	// time.Now; tests override it to freeze determinism.
+	now func() time.Time
+	// priorityWake is a size-1 buffered channel the WS manager selects on so it
+	// re-reconciles promptly when the engine's candidate set or the touched set
+	// changes (SetPriority / TouchFlowSymbol send a non-blocking wake).
+	priorityWake chan struct{}
+	// touchedBy records the last heatmap touch per symbol (dashboard tier-2
+	// lazy subscription source). Entries are GC'd when they idle past WSSiteIdleTTL.
+	touchedBy map[string]time.Time
 }
 
 // NewService constructs a Service from config.
 func NewService(cfg *Config) *Service {
 	return &Service{
-		cfg:        cfg,
-		log:        logger.NewMCPLogger(),
-		httpClient: &http.Client{Timeout: 30 * time.Second},
-		assets:     make(map[string]*asset),
+		cfg:          cfg,
+		log:          logger.NewMCPLogger(),
+		httpClient:   &http.Client{Timeout: 30 * time.Second},
+		assets:       make(map[string]*asset),
+		flow:         make(map[string]*SymbolFlow),
+		now:          time.Now,
+		priorityWake: make(chan struct{}, 1),
+		touchedBy:    make(map[string]time.Time),
 	}
 }
 
@@ -98,6 +119,7 @@ func (s *Service) SetPriority(symbols []string) {
 	s.mu.Lock()
 	s.prioritySymbols = clean
 	s.mu.Unlock()
+	s.wakeWS()
 }
 
 // Priority returns the engine's current candidate symbols (may be nil/empty).
@@ -231,6 +253,12 @@ func (s *Service) Start(ctx context.Context) {
 	// Immediate first ingest.
 	if err := s.Ingest(ctx); err != nil {
 		_ = err
+	}
+	// Spawn the WS manager (real taker-flow + l2Book) when enabled. It runs in
+	// the service process, lazily subscribing to the engine's candidate set plus
+	// recently-touched dashboard symbols, and exits on ctx cancellation.
+	if s.cfg == nil || s.cfg.WSEnabled {
+		go s.wsManager(ctx)
 	}
 	interval := s.cfg.Interval
 	if interval <= 0 {

@@ -39,6 +39,29 @@ type Config struct {
 	// DefaultAvgLeverage is the assumed average leverage used when inferring
 	// exposure proxies from open interest (informational only).
 	DefaultAvgLeverage float64
+
+	// WSEnabled gates the real Hyperliquid WebSocket taker-flow + l2Book data
+	// plane (Option B). When disabled, the heatmap falls back to the synthetic
+	// OI x mark formula. Default true; zero-symbol sets keep it cheap.
+	WSEnabled bool
+	// HLWSURL is the Hyperliquid public WebSocket base.
+	HLWSURL string
+	// WSReconcileInterval is how often the WS manager re-diffs the desired
+	// subscription set against the live set and GCs idle/touched symbols.
+	WSReconcileInterval time.Duration
+	// FlowDecayHalfLife is the read-time exponential half-life of taker-flow
+	// (aggressive buy/sell) notional per price bin. Old prints fade; beyond
+	// FlowMaxAge the flow is treated as stale and the heatmap falls back.
+	FlowDecayHalfLife time.Duration
+	// FlowMaxAge is how long a flow entry stays fresh before the heatmap falls
+	// back to the OI x mark formula (>= this age = stale).
+	FlowMaxAge time.Duration
+	// WSSiteIdleTTL is how long a touched (dashboard) symbol stays subscribed
+	// after its last heatmap touch before it is unsubscribed and GC'd.
+	WSSiteIdleTTL time.Duration
+	// WSBookWeight is the factor blending real near-touch resting depth into
+	// the cost layer (longCost += bookWeight * ask-depth at that bin). 0..1.
+	WSBookWeight float64
 }
 
 // LoadConfig reads config from the environment, applying defaults.
@@ -54,6 +77,14 @@ func LoadConfig() *Config {
 		PineifyHardReject:     envBool("PINEIFY_HARD_REJECT", false),
 		PineifyMinConviction:  envFloat("PINEIFY_MIN_CONVICTION", 0.7),
 		DefaultAvgLeverage:    envFloat("SIGNAL_SERVICE_AVG_LEVERAGE", 10),
+
+		WSEnabled:           envBool("SIGNAL_SERVICE_WS_ENABLED", true),
+		HLWSURL:             env("HYPERLIQUID_WS_URL", "wss://api.hyperliquid.xyz/ws"),
+		WSReconcileInterval: envDuration("SIGNAL_SERVICE_WS_RECONCILE_INTERVAL", 30*time.Second),
+		FlowDecayHalfLife:   envDuration("SIGNAL_SERVICE_WS_DECAY", 30*time.Minute),
+		FlowMaxAge:          envDuration("SIGNAL_SERVICE_WS_MAX_AGE", 2*time.Hour),
+		WSSiteIdleTTL:       envDuration("SIGNAL_SERVICE_WS_IDLE_TTL", 15*time.Minute),
+		WSBookWeight:        clampFloat(envFloat("SIGNAL_SERVICE_WS_BOOK_WEIGHT", 0.5), 0, 1),
 	}
 }
 
@@ -92,6 +123,16 @@ func envDuration(key string, def time.Duration) time.Duration {
 }
 
 func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+func clampFloat(v, lo, hi float64) float64 {
 	if v < lo {
 		return lo
 	}

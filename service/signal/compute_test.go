@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 	"testing"
+	"time"
 
 	"nofx/provider/vergex"
 )
@@ -654,4 +655,203 @@ func TestRankDoesNotMutateSharedScore_AndSignalLabRecomputes(t *testing.T) {
 	if out.Data.Score != out.Data.CompositeZ {
 		t.Errorf("score scalar = %q, want compositeZ %q", out.Data.Score, out.Data.CompositeZ)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Real WS taker-flow + order-book -> Signal Lab Flow/Liquidity rows
+// ---------------------------------------------------------------------------
+
+// seedFlowFreezesNow seeds the service's WS flow accumulator for a symbol and
+// freezes s.now() to the given timestamp so decay is deterministic in tests.
+func seedFlow(s *Service, sym string, now time.Time, buy, sell map[int]flowBin, bidTotal, askTotal float64) {
+	s.mu.Lock()
+	s.flow[sym] = &SymbolFlow{
+		Coin:       sym,
+		anchorMark: 100,
+		anchorStep: 1,
+		buyByBin:   buy,
+		sellByBin:  sell,
+		bidTotal:   bidTotal,
+		askTotal:   askTotal,
+	}
+	s.now = func() time.Time { return now }
+	s.mu.Unlock()
+}
+
+// labDimRows decodes the SignalLab payload and returns the dimensions[] rows.
+func labDimRows(t *testing.T, raw json.RawMessage) []map[string]interface{} {
+	t.Helper()
+	var out struct {
+		Data struct {
+			Dimensions []map[string]interface{} `json:"dimensions"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode SignalLab: %v", err)
+	}
+	return out.Data.Dimensions
+}
+
+func TestSignalLabTakerFlowBuyHeavy(t *testing.T) {
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	// Buy-heavy: 10000$ buys vs 2000$ sells -> ratio 0.833 (>=0.55 bullish).
+	buy := map[int]flowBin{0: {notional: 10000, lastTouch: now}}
+	sell := map[int]flowBin{0: {notional: 2000, lastTouch: now}}
+	a := &asset{Symbol: "BTC", MarketType: "core_perp", Category: "crypto",
+		Mark: 100, PrevDay: 100, Funding: 0.0, OI: 10}
+	s := testService([]*asset{a})
+	seedFlow(s, "BTC", now, buy, sell, 0, 0)
+
+	rows := labDimRows(t, mustLab(s, "BTC"))
+	row := findDim(rows, "Flow", "Taker Flow")
+	if row == nil {
+		t.Fatalf("Taker Flow row missing; rows=%v", dimLabels(rows))
+	}
+	if row["direction"] != "bullish" {
+		t.Errorf("direction = %v, want bullish", row["direction"])
+	}
+	if row["strength"] != "strong" {
+		t.Errorf("strength = %v, want strong (|0.833-0.5|*2=0.667)", row["strength"])
+	}
+	// Rows are prepended: Flow row must be first.
+	if rows[0]["family"] != "Flow" {
+		t.Errorf("Flow row not first; first=%v", rows[0]["family"])
+	}
+}
+
+func TestSignalLabTakerFlowSellHeavy(t *testing.T) {
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	// Sell-heavy: 1000$ buys vs 9000$ sells -> ratio 0.10 (<=0.45 bearish).
+	buy := map[int]flowBin{0: {notional: 1000, lastTouch: now}}
+	sell := map[int]flowBin{0: {notional: 9000, lastTouch: now}}
+	a := &asset{Symbol: "BTC", MarketType: "core_perp", Category: "crypto",
+		Mark: 100, PrevDay: 100, Funding: 0.0, OI: 10}
+	s := testService([]*asset{a})
+	seedFlow(s, "BTC", now, buy, sell, 0, 0)
+
+	rows := labDimRows(t, mustLab(s, "BTC"))
+	row := findDim(rows, "Flow", "Taker Flow")
+	if row == nil {
+		t.Fatalf("Taker Flow row missing; rows=%v", dimLabels(rows))
+	}
+	if row["direction"] != "bearish" {
+		t.Errorf("direction = %v, want bearish", row["direction"])
+	}
+}
+
+func TestSignalLabBookImbalanceSkewed(t *testing.T) {
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	// Bid-skewed: bid 8000 vs ask 2000 -> imb +0.60 (>+0.10 bullish, |imb|>=0.4 strong).
+	a := &asset{Symbol: "BTC", MarketType: "core_perp", Category: "crypto",
+		Mark: 100, PrevDay: 100, Funding: 0.0, OI: 10}
+	s := testService([]*asset{a})
+	seedFlow(s, "BTC", now, nil, nil, 8000, 2000)
+
+	rows := labDimRows(t, mustLab(s, "BTC"))
+	row := findDim(rows, "Liquidity", "Order-Book Imbalance")
+	if row == nil {
+		t.Fatalf("Book Imbalance row missing; rows=%v", dimLabels(rows))
+	}
+	if row["direction"] != "bullish" {
+		t.Errorf("direction = %v, want bullish", row["direction"])
+	}
+	if row["strength"] != "strong" {
+		t.Errorf("strength = %v, want strong", row["strength"])
+	}
+}
+
+func TestSignalLabFlowOmittedWhenNil(t *testing.T) {
+	// No WS flow at all -> flow rows must be OMITTED (never zero-as-balanced).
+	a := &asset{Symbol: "BTC", MarketType: "core_perp", Category: "crypto",
+		Mark: 100, PrevDay: 100, Funding: 0.0, OI: 10}
+	s := testService([]*asset{a})
+	rows := labDimRows(t, mustLab(s, "BTC"))
+	if findDim(rows, "Flow", "Taker Flow") != nil || findDim(rows, "Liquidity", "Order-Book Imbalance") != nil {
+		t.Errorf("flow rows must be omitted when s.flow is nil; rows=%v", dimLabels(rows))
+	}
+	if len(rows) != 3 {
+		t.Errorf("only 3 core rows expected, got %d", len(rows))
+	}
+}
+
+func TestSignalLabFlowOmittedWhenAllDecayed(t *testing.T) {
+	// Flow exists but is stale (lastTouch well beyond FlowMaxAge=2h) -> decayedBin
+	// returns 0 -> totF==0 -> rows omitted.
+	old := time.Date(2026, 8, 15, 6, 0, 0, 0, time.UTC) // 6h before now
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	buy := map[int]flowBin{0: {notional: 10000, lastTouch: old}}
+	sell := map[int]flowBin{0: {notional: 2000, lastTouch: old}}
+	a := &asset{Symbol: "BTC", MarketType: "core_perp", Category: "crypto",
+		Mark: 100, PrevDay: 100, Funding: 0.0, OI: 10}
+	s := testService([]*asset{a})
+	seedFlow(s, "BTC", now, buy, sell, 0, 0)
+
+	rows := labDimRows(t, mustLab(s, "BTC"))
+	if findDim(rows, "Flow", "Taker Flow") != nil {
+		t.Errorf("stale Taker Flow must be omitted; rows=%v", dimLabels(rows))
+	}
+}
+
+func TestSignalLabFlowRowsOrderingAndCap(t *testing.T) {
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	buy := map[int]flowBin{0: {notional: 6000, lastTouch: now}}
+	sell := map[int]flowBin{0: {notional: 4000, lastTouch: now}}
+	a := &asset{Symbol: "BTC", MarketType: "core_perp", Category: "crypto",
+		Mark: 100, PrevDay: 100, Funding: 0.0, OI: 10}
+	s := testService([]*asset{a})
+	seedFlow(s, "BTC", now, buy, sell, 5000, 5000)
+
+	rows := labDimRows(t, mustLab(s, "BTC"))
+	// Flow-first, then core rows; never exceed the formatter's 8-row cap.
+	if rows[0]["family"] != "Flow" || rows[1]["family"] != "Liquidity" {
+		t.Errorf("flow rows not first two; rows=%v", dimLabels(rows))
+	}
+	if len(rows) > 8 {
+		t.Errorf("rows exceed 8-row cap: %d", len(rows))
+	}
+}
+
+func TestSignalLabFlowDeterministicJSON(t *testing.T) {
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	buy := map[int]flowBin{0: {notional: 6000, lastTouch: now}, 3: {notional: 2000, lastTouch: now}}
+	sell := map[int]flowBin{0: {notional: 2000, lastTouch: now}, -2: {notional: 1000, lastTouch: now}}
+	a := &asset{Symbol: "BTC", MarketType: "core_perp", Category: "crypto",
+		Mark: 100, PrevDay: 100, Funding: 0.0, OI: 10}
+	s := testService([]*asset{a})
+	seedFlow(s, "BTC", now, buy, sell, 7000, 3000)
+
+	r1 := string(mustLab(s, "BTC"))
+	r2 := string(mustLab(s, "BTC"))
+	if r1 != r2 {
+		t.Error("SignalLab output not deterministic across two calls")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+func mustLab(s *Service, sym string) json.RawMessage {
+	body, err := s.SignalLab(sym)
+	if err != nil {
+		panic("SignalLab error: " + err.Error())
+	}
+	return body
+}
+
+func findDim(rows []map[string]interface{}, family, label string) map[string]interface{} {
+	for _, r := range rows {
+		if r["family"] == family && r["label"] == label {
+			return r
+		}
+	}
+	return nil
+}
+
+func dimLabels(rows []map[string]interface{}) []string {
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r["family"].(string)+"/"+r["label"].(string))
+	}
+	return out
 }

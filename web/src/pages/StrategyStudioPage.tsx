@@ -577,9 +577,11 @@ function SignalLabPanel({
 
   const bias = signalBiasInfo(data.bias)
   const BiasIcon = bias.icon
-  const levels = data.levels || {}
-  const metrics = data.metrics || {}
+  const levels = data.levels
+  const metrics = data.metrics
   const dimensions = data.dimensions || []
+  const hasLevels = !!levels && Object.keys(levels).length > 0
+  const hasMetrics = !!metrics && Object.keys(metrics).length > 0
 
   return (
     <section className="overflow-hidden rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter shadow-lg">
@@ -625,12 +627,18 @@ function SignalLabPanel({
               market #{data.rank}/{data.universeSize || 30}
             </div>
           ) : null}
-          {typeof data.compositeZ === 'number' ? (
-            <div className="pb-1 font-mono text-base text-nofx-success">
-              z {data.compositeZ >= 0 ? '+' : ''}
-              {data.compositeZ.toFixed(2)}
-            </div>
-          ) : null}
+          {(() => {
+            const z = data.compositeZ
+            if (typeof z !== 'number' && typeof z !== 'string') return null
+            const num = typeof z === 'string' ? Number(z) : z
+            if (!Number.isFinite(num)) return null
+            return (
+              <div className="pb-1 font-mono text-base text-nofx-success">
+                z {num >= 0 ? '+' : ''}
+                {num.toFixed(2)}
+              </div>
+            )
+          })()}
           <BiasIcon
             className={`mb-1 h-6 w-6 ${directionStyle(data.bias).text}`}
           />
@@ -660,79 +668,85 @@ function SignalLabPanel({
         </div>
       ) : null}
 
-      <div className="border-t border-[rgba(26,24,19,0.14)] p-5">
-        <div className="text-base font-semibold text-nofx-text">
-          Key levels price {formatPrice(levels.markPrice)}
+      {hasLevels ? (
+        <div className="border-t border-[rgba(26,24,19,0.14)] p-5">
+          <div className="text-base font-semibold text-nofx-text">
+            Key levels price {formatPrice(levels!.markPrice)}
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <DetailMetricCard
+              label="Fair-value magnet (POC)"
+              value={`${formatPrice(levels!.poc)} (${formatSignedPct(levels!.pocDistPct)})`}
+              note="Where the most cost is concentrated."
+              tone="neutral"
+            />
+            <DetailMetricCard
+              label="Strongest liq cluster"
+              value={`${formatPrice(levels!.magnet)} (${formatSignedPct(levels!.magnetDistPct)})`}
+              note="Largest forced-close cluster in the selected band."
+              tone="cyan"
+            />
+            <DetailMetricCard
+              label="Resistance above"
+              value={`${formatPrice(levels!.resistance)} (${formatSignedPct(levels!.resistanceDistPct)})`}
+              note="Trapped longs may sell to break even as price returns."
+              tone="red"
+            />
+            <DetailMetricCard
+              label="Support below"
+              value={`${formatPrice(levels!.support)} (${formatSignedPct(levels!.supportDistPct)})`}
+              note="Trapped shorts may cover as price falls back."
+              tone="green"
+            />
+          </div>
         </div>
-        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <DetailMetricCard
-            label="Fair-value magnet (POC)"
-            value={`${formatPrice(levels.poc)} (${formatSignedPct(levels.pocDistPct)})`}
-            note="Where the most cost is concentrated."
-            tone="neutral"
-          />
-          <DetailMetricCard
-            label="Strongest liq cluster"
-            value={`${formatPrice(levels.magnet)} (${formatSignedPct(levels.magnetDistPct)})`}
-            note="Largest forced-close cluster in the selected band."
-            tone="cyan"
-          />
-          <DetailMetricCard
-            label="Resistance above"
-            value={`${formatPrice(levels.resistance)} (${formatSignedPct(levels.resistanceDistPct)})`}
-            note="Trapped longs may sell to break even as price returns."
-            tone="red"
-          />
-          <DetailMetricCard
-            label="Support below"
-            value={`${formatPrice(levels.support)} (${formatSignedPct(levels.supportDistPct)})`}
-            note="Trapped shorts may cover as price falls back."
-            tone="green"
-          />
-        </div>
+      ) : null}
 
-        <div className="mt-6 text-base font-semibold text-nofx-text">
-          Structure metrics
+      {hasMetrics ? (
+        <div className="border-t border-[rgba(26,24,19,0.14)] p-5">
+          <div className="text-base font-semibold text-nofx-text">
+            Structure metrics
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <DetailMetricCard
+              label="Squeeze fuel above"
+              value={formatMoney(metrics!.shortLiqAbove)}
+              note="Short liquidation fuel above current price."
+              tone="green"
+            />
+            <DetailMetricCard
+              label="Flush fuel below"
+              value={formatMoney(metrics!.longLiqBelow)}
+              note="Long liquidation fuel below current price."
+              tone="red"
+            />
+            <DetailMetricCard
+              label="Cascade vulnerability"
+              value={metricPct(metrics!.cascadeVulnPct)}
+              note="Share of OI close to force-close."
+              tone="neutral"
+            />
+            <DetailMetricCard
+              label="Long book PnL"
+              value={formatMoney(metrics!.longOverhangPnl)}
+              note={`avg ${metricPct(metrics!.gLong)}`}
+              tone="green"
+            />
+            <DetailMetricCard
+              label="Short book PnL"
+              value={formatMoney(metrics!.shortOverhangPnl)}
+              note={`avg ${metricPct(metrics!.gShort)}`}
+              tone="red"
+            />
+            <DetailMetricCard
+              label="Top-10 concentration"
+              value={metricPct(metrics!.top10Pct)}
+              note="Share held by the top 10 addresses."
+              tone="neutral"
+            />
+          </div>
         </div>
-        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <DetailMetricCard
-            label="Squeeze fuel above"
-            value={formatMoney(metrics.shortLiqAbove)}
-            note="Short liquidation fuel above current price."
-            tone="green"
-          />
-          <DetailMetricCard
-            label="Flush fuel below"
-            value={formatMoney(metrics.longLiqBelow)}
-            note="Long liquidation fuel below current price."
-            tone="red"
-          />
-          <DetailMetricCard
-            label="Cascade vulnerability"
-            value={metricPct(metrics.cascadeVulnPct)}
-            note="Share of OI close to force-close."
-            tone="neutral"
-          />
-          <DetailMetricCard
-            label="Long book PnL"
-            value={formatMoney(metrics.longOverhangPnl)}
-            note={`avg ${metricPct(metrics.gLong)}`}
-            tone="green"
-          />
-          <DetailMetricCard
-            label="Short book PnL"
-            value={formatMoney(metrics.shortOverhangPnl)}
-            note={`avg ${metricPct(metrics.gShort)}`}
-            tone="red"
-          />
-          <DetailMetricCard
-            label="Top-10 concentration"
-            value={metricPct(metrics.top10Pct)}
-            note="Share held by the top 10 addresses."
-            tone="neutral"
-          />
-        </div>
-      </div>
+      ) : null}
     </section>
   )
 }

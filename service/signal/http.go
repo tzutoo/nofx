@@ -56,6 +56,7 @@ func (s *Service) handleSignalLab(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request: symbol required"})
 		return
 	}
+	s.TouchFlowSymbol(symbol)
 	body, err := s.SignalLab(symbol)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
@@ -72,6 +73,7 @@ func (s *Service) handleHeatmap(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request: symbol required"})
 		return
 	}
+	s.TouchFlowSymbol(symbol)
 	body, err := s.Heatmap(symbol)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})

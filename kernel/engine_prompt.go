@@ -209,6 +209,7 @@ func (e *StrategyEngine) buildVergexSystemPrompt(accountEquity float64, variant 
 		sb.WriteString("2. Claw402.ai Signal Lab: trend, momentum, event/model confirmation; this is the core pre-entry confirmation source.\n")
 		sb.WriteString("3. Claw402.ai Cost/Liquidation Heatmap: crowded liquidation/cost zones for relative stress/crowding context (stops/targets come from ATR and candle structure).\n")
 		sb.WriteString("4. Raw OHLCV candles: entry timing, trend structure, volatility and risk/reward validation.\n\n")
+		sb.WriteString("Signal Lab's Flow/Liquidity rows are real live taker/order-book data; weigh them for entry timing and confidence. They are directional context, not levels — stop/target values always come from ATR and candle structure (Priority #4).\n\n")
 		sb.WriteString("# Trading Rules\n\n")
 		sb.WriteString("- Manage existing positions before opening new ones.\n")
 		sb.WriteString("- Open only when Signal Lab, heatmap and raw candles broadly agree; wait when key data is missing or contradictory.\n")
@@ -224,6 +225,7 @@ func (e *StrategyEngine) buildVergexSystemPrompt(accountEquity float64, variant 
 		sb.WriteString("2. Claw402.ai Signal Lab: trend, momentum, event/model confirmation; this is the core pre-entry confirmation source.\n")
 		sb.WriteString("3. Claw402.ai Cost/Liquidation Heatmap: crowded liquidation/cost zones for relative stress/crowding context (stops/targets come from ATR and candle structure).\n")
 		sb.WriteString("4. Raw OHLCV candles: entry timing, trend structure, volatility and risk/reward validation.\n\n")
+		sb.WriteString("Signal Lab's Flow/Liquidity rows are real live taker/order-book data; weigh them for entry timing and confidence. They are directional context, not levels — stop/target values always come from ATR and candle structure (Priority #4).\n\n")
 		sb.WriteString("# Trading Rules\n\n")
 		sb.WriteString("- Manage existing positions before opening new ones.\n")
 		sb.WriteString("- Open only when Signal Lab, heatmap and raw candles broadly agree; wait when key data is missing or contradictory.\n")
@@ -262,6 +264,7 @@ func vergexHoldRules() string {
 	return "- Hold for meaningful moves, do not churn: hold new positions for at least 90 minutes; never close inside the -2%..+3% noise band before ~3 hours; after closing a symbol wait 4 hours before re-entry; open at most 1-2 new positions per hour. Small in-and-out trades bled this account to death on fees.\n" +
 		"- Fees are the main edge killer: a round trip costs ~0.1% of notional. Only take setups whose realistic target is well beyond fees: stop-loss around -3% and take-profit around +8% or beyond. Do not aim for 0.2-0.3% scalps — they cannot cover fees.\n" +
 		"- Give positions room to develop: set stops and targets from ATR and recent candle structure (Decision Data Priority #4) — stops beyond short-term noise (around -3%) and targets at a realistic multiple of ATR on the prevailing trend (around +8%). Use the cost/liquidation heatmap only as relative stress/crowding context, never as a stop/target level. Do not exit on small green or small red.\n" +
+		"- Real vs proxy: the Signal Lab \"Flow/Liquidity\" rows come from the live Hyperliquid taker-flow and order-book feed and are real — use them to gauge entry timing and confidence. The cost/liquidation heatmap and net-flow remain self-built proxies: never place a stop or target on them, and never anchor a level on the heatmap. Stop/target magnitude always comes from ATR and candle structure.\n" +
 		"- Data note: the cost/liquidation heatmap and net-flow are self-built proxies derived from public funding, open-interest and mark data, not a full trader-book ledger; treat them as stress indicators, not absolute liquidation levels.\n\n"
 }
 
@@ -308,6 +311,7 @@ func writeVergexSchemaPrompt(sb *strings.Builder, zh bool) {
 		sb.WriteString("- Position: current holdings with side, entry, leverage, unrealized PnL and liquidation price.\n")
 		sb.WriteString("- Claw402 Ranking: tradable candidate pool, rank, direction and category for this cycle.\n")
 		sb.WriteString("- Signal Lab: per-symbol Claw402 deep signal used to confirm trend and quality.\n")
+		sb.WriteString("- Signal Lab Flow/Liquidity: REAL Hyperliquid WebSocket taker-flow (aggressive buy vs sell) and near-touch order-book depth for the candidate. Use as an entry/confidence confirmation, never as a stop/target level.\n")
 		sb.WriteString("- Cost/Liquidation Heatmap: cost and liquidation clusters for relative stress/crowding context (stops/targets from ATR and candle structure).\n")
 		sb.WriteString("- Raw OHLCV Kline: raw candles used for trend structure, entry timing and risk/reward.\n")
 	} else {
@@ -318,6 +322,7 @@ func writeVergexSchemaPrompt(sb *strings.Builder, zh bool) {
 		sb.WriteString("- Position: current holdings with side, entry, leverage, unrealized PnL and liquidation price.\n")
 		sb.WriteString("- Claw402 Ranking: tradable candidate pool, rank, direction and category for this cycle.\n")
 		sb.WriteString("- Signal Lab: per-symbol Claw402 deep signal used to confirm trend and quality.\n")
+		sb.WriteString("- Signal Lab Flow/Liquidity: REAL Hyperliquid WebSocket taker-flow (aggressive buy vs sell) and near-touch order-book depth for the candidate. Use as an entry/confidence confirmation, never as a stop/target level.\n")
 		sb.WriteString("- Cost/Liquidation Heatmap: cost and liquidation clusters for relative stress/crowding context (stops/targets from ATR and candle structure).\n")
 		sb.WriteString("- Raw OHLCV Kline: raw candles used for trend structure, entry timing and risk/reward.\n")
 	}
