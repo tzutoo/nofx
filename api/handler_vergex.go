@@ -22,7 +22,7 @@ func (s *Server) handleVergexSignalRanking(c *gin.Context) {
 	})
 	if err != nil {
 		logger.Warnf("Vergex signal-ranking failed: %v", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		c.JSON(vergexErrorStatus(err), gin.H{"error": err.Error()})
 		return
 	}
 
@@ -48,7 +48,7 @@ func (s *Server) handleVergexSignalLab(c *gin.Context) {
 	})
 	if err != nil {
 		logger.Warnf("Vergex signal-lab failed: %v", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		c.JSON(vergexErrorStatus(err), gin.H{"error": err.Error()})
 		return
 	}
 	c.Data(http.StatusOK, "application/json; charset=utf-8", body)
@@ -67,7 +67,7 @@ func (s *Server) handleVergexCostLiquidationHeatmap(c *gin.Context) {
 	})
 	if err != nil {
 		logger.Warnf("Vergex cost-liquidation-heatmap failed: %v", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		c.JSON(vergexErrorStatus(err), gin.H{"error": err.Error()})
 		return
 	}
 	c.Data(http.StatusOK, "application/json; charset=utf-8", body)
@@ -89,7 +89,7 @@ func (s *Server) handleVergexFlowMarkets(c *gin.Context) {
 	body, err := client.GetFlowMarkets(context.Background(), chain, window, limit)
 	if err != nil {
 		logger.Warnf("Vergex flow-markets failed: %v", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		c.JSON(vergexErrorStatus(err), gin.H{"error": err.Error()})
 		return
 	}
 	c.Data(http.StatusOK, "application/json; charset=utf-8", body)
@@ -102,7 +102,10 @@ func (s *Server) newVergexClientForRequest(c *gin.Context) (*vergex.Client, bool
 		return nil, false
 	}
 	// The self-hosted signal service requires no wallet key.
-	return vergex.NewClient("", &logger.MCPLogger{}), true
+	// Pass the caller's claw402 wallet key if one was resolved for this request
+	// (empty falls back to CLAW402_WALLET_KEY env). The client routes the heatmap
+	// to claw402 only when a key is present.
+	return vergex.NewClient("", "", &logger.MCPLogger{}), true
 }
 
 func parsePositiveInt(raw string, fallback int) int {
@@ -121,4 +124,18 @@ func withDefault(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// vergexErrorStatus maps a vergex client error back to an HTTP status code.
+// The client wraps non-200 responses as "vergex HTTP <status> (<path>): body",
+// so a 404 "market not found" stays a 404 and a 503 degraded service stays a
+// 503 instead of every error collapsing to 502.
+func vergexErrorStatus(err error) int {
+	s := err.Error()
+	for _, code := range []int{400, 401, 403, 404, 409, 422, 429, 500, 502, 503} {
+		if strings.Contains(s, fmt.Sprintf("vergex HTTP %d ", code)) {
+			return code
+		}
+	}
+	return http.StatusBadGateway
 }

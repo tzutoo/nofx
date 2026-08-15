@@ -192,10 +192,11 @@ type StrategyEngine struct {
 }
 
 // NewStrategyEngine creates strategy execution engine.
-// The claw402WalletKey variadic is retained for backward-compatible call sites
-// but is IGNORED: the data plane no longer routes through claw402. NofxOS goes
-// direct (free), and the vergex client points at the self-hosted signal
-// service (SIGNAL_SERVICE_BASE_URL, default http://localhost:8480).
+// The claw402WalletKey variadic is used for the vergex cost/liquidation
+// heatmap (paid claw402 x402 gateway). When empty, the client falls back to
+// the CLAW402_WALLET_KEY env var; if still unavailable the heatmap degrades to
+// the self-hosted signal service. Ranking / signal-lab / netflow always use
+// the signal service (SIGNAL_SERVICE_BASE_URL, default http://localhost:8480).
 func NewStrategyEngine(config *store.StrategyConfig, claw402WalletKey ...string) *StrategyEngine {
 	// Create NofxOS client with API key from config (direct nofxos.ai — no claw402).
 	apiKey := config.Indicators.NofxOSAPIKey
@@ -204,8 +205,13 @@ func NewStrategyEngine(config *store.StrategyConfig, claw402WalletKey ...string)
 	}
 	client := nofxos.NewClient(nofxos.DefaultBaseURL, apiKey)
 
-	// Vergex client always points at the self-hosted signal service (infallible).
-	vergexClient := vergex.NewClient("", &logger.MCPLogger{})
+	// Vergex client: hybrid. Heatmap uses claw402 when a key is available;
+	// everything else uses the self-hosted signal service.
+	walletKey := ""
+	if len(claw402WalletKey) > 0 {
+		walletKey = claw402WalletKey[0]
+	}
+	vergexClient := vergex.NewClient("", walletKey, &logger.MCPLogger{})
 
 	return &StrategyEngine{
 		config:             config,

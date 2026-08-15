@@ -371,6 +371,50 @@ Steps **2+3+4** are the atomic unit and must land as one commit: step 3 changes 
 - Net-flow parity → API-complete-only in phase-1; engine stays on free nofxos.
 - `api/strategy.go` → MUST be edited to relax `resolveStrategyDataWalletKey` (zero-key repoint).
 
+## 8. Paid Claw402 vs Free Signal-Service: Parity & AI-Sufficiency
+
+> **Analysis status:** appended after live comparison of captured claw402 responses (signal-ranking, heatmap, flow-markets) against the self-hosted service output. Analysis-only; no code changed by this note.
+
+**Executive summary — only a small sub-surface of the paid payload is actually consumed by the AI.** The formatters (`FormatAnalysisForAI` → `FormatSignalLabMarkdown`/`FormatHeatmapMarkdown`) and the engine read a narrow field set (`bins`, `dimensions`, `SignalRankItem`). The free service reproduces **all consumed fields**, so prompt output is near byte-equivalent. But **"field present" ≠ "value faithful"**:
+
+| Product | Consumed fields present? | Value semantics faithful? | Verdict |
+|---|---|---|---|
+| Signal ranking | ✅ | ⚠️ bias = momentum, not crowdedness | **Sufficient** (caveats) |
+| Signal lab | ✅ | 🔴 3 near-vacuous proxy rows, no percentile | **Not sufficient** as "core confirmation" |
+| Cost/liq heatmap | ✅ | 🔴 longLiq/shortLiq fabricated → stops/targets anchored on them | **Not sufficient** for absolute levels (highest risk) |
+| Netflow | ⚠️ API-only | 🔴 proxy (~34K vs paid ~2.56M) | **N/A** phase-1 (unconsumed) |
+
+**Key finding:** Claw402's "richer" fields (`raw.cgoPct`, `lfaPct`, `cascadeVuln`, `markPriceSource`, `market{isActive,marketId}`, `cost{state,totalPositions}`, `liquidation{state,reason}`, `meta{asOfBlock,appliedThroughEventId}`) are **never parsed or rendered** by any parser/formatter — dropping them causes **zero prompt regression**. The real risk is the free products' *fabricated values* for consumed fields, because the AI **acts** on them.
+
+### 8.1 Signal Ranking — SUFFICIENT
+- All consumed fields present; `bias` tokens exact; ordering real; `|score|≥0.4` gate runs on a genuine per-cohort z-score. ✅
+- **Caveat (P2):** free `Score` = momentum+funding+OI only. Paid `compositeZ` incorporated concentration/leverage/cascade-vulnerability (`cgoPct`/`lfaPct`/`cascadeVuln`). A fragile, OI-driven move can get a clean bullish/bearish tag with no crowding penalty — that signal is gone entirely.
+
+### 8.2 Signal Lab — NOT SUFFICIENT as "core pre-entry confirmation" (P1)
+- Schema present (`dimensions[]`), but only 3 proxy rows: **POC, 24h Momentum, Funding Pressure**. POC-direction ≈ momentum-direction; funding already in ranking → rows carry ~no incremental info. Real technicals (RSI/EMA/ADX/levels/event) are gone. `percentile` renders as `-`.
+- **Impact:** the rule *"Open only when Signal Lab, heatmap and raw candles broadly agree"* becomes ~vacuously satisfied whenever momentum agrees with ranking — the confirmation gate is effectively removed.
+
+### 8.3 Cost/Liq Heatmap — NOT SUFFICIENT for stop/target levels (P0)
+- Every field the AI sees is present and USD-scaled; **values are synthetic** — `longLiq/shortLiq` are a deterministic exp-taper (pegged 33% of mark cost), not real liquidation clusters.
+- The prompt instructs the AI to place stops/targets at "heatmap resistance/liquidation zones"; it therefore anchors a stop/target to a **fabricated** level believing it is a real crowd boundary. §3.7 disclosure ("stress indicators") partially contradicts this operational rule.
+- **Recommendation (documented, not implemented):** reposition the free heatmap in the prompt from "stop/target zones" to "relative stress/volatility context," with stops/targets derived from ATR/candle structure instead.
+
+### 8.4 Netflow — N/A phase-1 (unconsumed)
+- Gated off for `vergex_signal` (`usesHyperliquidNativeUniverse`); not rendered. Structural parity on the emitted shape; **magnitude/semantics are a proxy** (funding×OI×mark, ~34K vs paid 2.56M real taker-flow). No current impact.
+
+### 8.5 Cross-cutting residual risks
+| # | Risk | Severity | Affected decision |
+|---|---|---|---|
+| R1 | Fabricated heatmap liq → stop/target on synthetic zones | **P0** | Stop/target placement |
+| R2 | Vacuous Signal Lab → confirmation gate collapses | **P1** | Entry confirmation |
+| R3 | Ranking lacks crowding/fragility factor | **P1** | Direction bias of universe |
+| R4 | `confidence` semantics changed (relative-max vs absolute) | **P2** | Confidence weighting |
+| R5 | Contract gap: plan §3.5/§7 claim `liqBand→binStep` mapping, but `handleHeatmap` parses only `symbol` (ignores `liqBand`) | **P1** | Heatmap scaling differential |
+
+**Net judgment:** Ranking is faithful and safe to depend on. Signal Lab and Heatmap reproduce the *schema* but not the *semantics* — the free products the AI leans on for confirmation and stop/target placement are proxies or fabricated. **R1 (fabricated liquidation feeding stop/target logic) is the single highest residual risk** to real trading decisions.
+
+---
+
 ## References
 
 - Hyperliquid info API: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals

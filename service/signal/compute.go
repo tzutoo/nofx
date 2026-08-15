@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"nofx/provider/hyperliquid"
 	"nofx/provider/nofxos"
 	"nofx/provider/vergex"
 )
@@ -177,61 +178,137 @@ func meanStd(vals []float64) factorStats {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // heatmapBinStep returns the volatility-proxy bin step (no candle/ATR
-// dependency in v1): 0.1%..2% of mark, scaled by the 24h move.
+// dependency in v1): ~1%..2% of mark, scaled by the 24h move. The ~1% floor
+// keeps the ladder wide (comparable to claw402's ~1.2% step of ~90 on a ~7776
+// mark).
 func heatmapBinStep(a *asset) float64 {
 	pct := 0.01
 	if a.Mark > 0 && a.PrevDay > 0 {
 		move := math.Abs(a.Mark-a.PrevDay) / a.PrevDay
-		pct = math.Max(0.001, math.Min(0.02, 2*move))
+		pct = math.Max(0.01, math.Min(0.02, 2*move))
 	}
 	return pct * a.Mark
 }
 
+// Heatmap tuning constants. The ladder is a self-hosted, deterministic proxy
+// for the paid claw402 view: a wide range, a near-balanced BOTH-sided cost
+// cluster around mark, and liquidation fanning far out on each side.
+const (
+	// heatmapHalfRange is the number of bin-steps below and above mark the
+	// ladder spans. ±60 → 121 bins, wide enough to mirror claw402's wide range
+	// (~±5400 around a ~7776 mark) so the terminal ladder scrolls far.
+	heatmapHalfRange = 60
+	// heatmapLiqMarkFrac is the peak liquidation as a fraction of the
+	// corresponding mark (POC) cost — ~33% like claw402's mark-adjacent 17.7M
+	// longLiq vs 53M longCost, so liq is clearly visible rather than a sliver.
+	heatmapLiqMarkFrac = 0.33
+	// heatmapMidBand is the half-width (in bin-steps) of the cost band around
+	// mark. Cost is non-zero ONLY inside |d| < midBand and EXACTLY 0 at/outside
+	// the boundary, so the far-low/high bins carry liq only (as claw402 does).
+	heatmapMidBand = 12
+	// heatmapLiqTau is the taper length (in bin-steps) of each side's
+	// liquidation from the mark-adjacent peak toward the range edge.
+	heatmapLiqTau = 15.0
+)
+
 // Heatmap builds the cost/liquidation heatmap for a symbol as a raw JSON
 // payload matching the bins[] contract the vergex formatter parses. The USD
-// pool is derived from OI × mark, distributed by a funding-signed pressure
-// proxy; a real self-wallet position (when configured) anchors an entry/liquidation spike.
+// pool (OI × mark) is split near 50/50 (a mild funding tilt) into a BOTH-sided
+// cost cluster around mark; liquidation fans out far on each side (long-liq
+// below, short-liq above), co-occurring with cost in the mid band exactly as
+// the real claw402 data does.
 func (s *Service) Heatmap(symbol string) (json.RawMessage, error) {
-	assets, _, _, _ := s.Snapshot()
-	a, ok := assets[symbol]
+	a, ok := s.assetFor(symbol)
 	if !ok {
 		return nil, errMarketNotFound
 	}
 	binStep := heatmapBinStep(a)
 	if binStep <= 0 {
-		binStep = 0.001 * a.Mark
+		binStep = 0.01 * a.Mark
 	}
-	// Range ±6 bin steps around mark.
-	n := 13 // 6 below, mark, 6 above
+	n := 2*heatmapHalfRange + 1 // ±halfRange around mark
 	bins := make([]map[string]interface{}, n)
 	oiUSD := a.OI * a.Mark // total USD pool
-	sign := 1.0
-	if a.Funding < 0 {
-		sign = -1.0
+	mark := a.Mark
+
+	// Mild long/short pool split, near 50/50, tilting slightly by funding so
+	// BOTH sides always hold cost (claw402 shows both roughly balanced).
+	fundTilt := a.Funding / 0.002
+	if fundTilt < -1 {
+		fundTilt = -1
+	} else if fundTilt > 1 {
+		fundTilt = 1
 	}
-	// Pressure weight decays ~1/d^2 with distance from mark.
+	longFrac := 0.5 + 0.05*fundTilt
+	if longFrac < 0.45 {
+		longFrac = 0.45
+	} else if longFrac > 0.55 {
+		longFrac = 0.55
+	}
+	shortFrac := 1 - longFrac
+	longPool := oiUSD * longFrac
+	shortPool := oiUSD * shortFrac
+
+	// Cost: confined to a MID band around mark (|d| < midBand), decaying to
+	// EXACTLY 0 at the boundary so the far-low/high bins never show a cost bar —
+	// they carry liq only, matching real claw402.
+	costW := func(d int) float64 {
+		ad := d
+		if ad < 0 {
+			ad = -ad
+		}
+		if ad >= heatmapMidBand {
+			return 0
+		}
+		return 1 - (float64(ad)/float64(heatmapMidBand))*(float64(ad)/float64(heatmapMidBand))
+	}
 	var totalW float64
 	weights := make([]float64, n)
 	for i := 0; i < n; i++ {
-		dist := float64(i - 6) // -6..+6 bin steps
-		if dist == 0 {
-			weights[i] = 1.0
-		} else {
-			weights[i] = 1.0 / (dist * dist)
-		}
+		weights[i] = costW(i - heatmapHalfRange)
 		totalW += weights[i]
 	}
-	mark := a.Mark
+
+	// Liquidation: peak at the mark-adjacent bin and taper toward the edges, on
+	// the correct sides (long below, short above). Peak liq is scaled to a
+	// substantial fraction of the corresponding mark cost (like claw402's ~33%)
+	// so the map is not cost-dominated, while still covering the far regions.
+	longMarkCost := longPool / totalW
+	shortMarkCost := shortPool / totalW
+	liqPeakLong := heatmapLiqMarkFrac * longMarkCost
+	liqPeakShort := heatmapLiqMarkFrac * shortMarkCost
+	var maxWLong, maxWShort float64
+	wLongLiq := make([]float64, n)
+	wShortLiq := make([]float64, n)
 	for i := 0; i < n; i++ {
-		start := mark + float64(i-6)*binStep
+		d := i - heatmapHalfRange
+		if d < 0 {
+			ad := float64(-d)
+			wLongLiq[i] = math.Exp(-ad / heatmapLiqTau)
+			if wLongLiq[i] > maxWLong {
+				maxWLong = wLongLiq[i]
+			}
+		} else if d > 0 {
+			ad := float64(d)
+			wShortLiq[i] = math.Exp(-ad / heatmapLiqTau)
+			if wShortLiq[i] > maxWShort {
+				maxWShort = wShortLiq[i]
+			}
+		}
+	}
+
+	for i := 0; i < n; i++ {
+		start := mark + float64(i-heatmapHalfRange)*binStep
 		px := start + binStep/2
 		weight := weights[i]
-		longCost := 0.0
-		shortCost := 0.0
-		if sign > 0 {
-			longCost = oiUSD * weight / totalW
-		} else {
-			shortCost = oiUSD * weight / totalW
+		longCost := longPool * weight / totalW
+		shortCost := shortPool * weight / totalW
+		var longLiq, shortLiq float64
+		if maxWLong > 0 {
+			longLiq = liqPeakLong * wLongLiq[i] / maxWLong
+		}
+		if maxWShort > 0 {
+			shortLiq = liqPeakShort * wShortLiq[i] / maxWShort
 		}
 		bins[i] = map[string]interface{}{
 			"bucketStartPrice": round8(start),
@@ -239,16 +316,29 @@ func (s *Service) Heatmap(symbol string) (json.RawMessage, error) {
 			"px":               round8(px),
 			"longCost":         round2(longCost),
 			"shortCost":        round2(shortCost),
-			"longLiq":          round2(longCost * 0.2),
-			"shortLiq":         round2(shortCost * 0.2),
+			"longLiq":          round2(longLiq),
+			"shortLiq":         round2(shortLiq),
 		}
 	}
+
+	// Plausible non-zero address counters derived deterministically from the
+	// USD pool, in the claw402 order of magnitude (cost ~7867, liq ~6646).
+	costAddrs := int(math.Max(1, math.Round(oiUSD/5000)))
+	liqAddrs := int(math.Max(1, math.Round(float64(costAddrs)*0.845)))
+
 	payload := map[string]interface{}{
-		"symbol":    a.Symbol,
-		"marketType": a.MarketType,
-		"binStep":   round8(binStep),
-		"markPrice": round8(mark),
-		"bins":      bins,
+		"data": map[string]interface{}{
+			"symbol":     a.Symbol,
+			"marketType": a.MarketType,
+			"binStep":    round8(binStep),
+			"markPrice":  round8(mark),
+			"bins":       bins,
+			"costAddrs":  costAddrs,
+			"liqAddrs":   liqAddrs,
+			"market": map[string]interface{}{
+				"symbol": a.Symbol,
+			},
+		},
 	}
 	return json.Marshal(payload)
 }
@@ -260,8 +350,7 @@ func (s *Service) Heatmap(symbol string) (json.RawMessage, error) {
 // SignalLab builds the per-symbol signal-lab payload matching the
 // dimensions[] contract the vergex formatter parses.
 func (s *Service) SignalLab(symbol string) (json.RawMessage, error) {
-	assets, _, _, _ := s.Snapshot()
-	a, ok := assets[symbol]
+	a, ok := s.assetFor(symbol)
 	if !ok {
 		return nil, errMarketNotFound
 	}
@@ -407,6 +496,21 @@ func negative(list []entry) []entry {
 // ─────────────────────────────────────────────────────────────────────────────
 // helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+// assetFor resolves an asset by symbol, tolerating the user-facing form without
+// the xyz: prefix (e.g. "SP500" for the stored "xyz:SP500").
+func (s *Service) assetFor(symbol string) (*asset, bool) {
+	assets, _, _, _ := s.Snapshot()
+	if a, ok := assets[symbol]; ok {
+		return a, true
+	}
+	if formatted := hyperliquid.FormatCoinForAPI(symbol); formatted != symbol {
+		if a, ok := assets[formatted]; ok {
+			return a, true
+		}
+	}
+	return nil, false
+}
 
 var errMarketNotFound = &marketNotFoundError{}
 

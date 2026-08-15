@@ -159,8 +159,8 @@ func TestRankUniverseStdZeroAllZeros(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHeatmapUSDScaleAndSchema(t *testing.T) {
-	// Mark=100, PrevDay=100 -> move=0 -> pct=0.1% -> binStep=0.1. Positive
-	// funding -> long side gets the whole OI*mark pool; short side is zero.
+	// Mark=100, PrevDay=100 -> move=0 -> pct=1% -> binStep=1.0. Positive
+	// funding gives a mild long tilt but BOTH sides keep cost (near-balanced).
 	a := &asset{Symbol: "BTC", MarketType: "core_perp", Category: "crypto",
 		Mark: 100, PrevDay: 100, Funding: 0.001, OI: 10}
 	s := testService([]*asset{a})
@@ -174,27 +174,42 @@ func TestHeatmapUSDScaleAndSchema(t *testing.T) {
 		t.Fatalf("decode heatmap: %v", err)
 	}
 
-	binStep, _ := payload["binStep"].(float64)
-	if !approx(binStep, 0.1, 1e-9) {
-		t.Errorf("binStep = %v, want 0.1 (0.1%% of mark)", binStep)
+	data, _ := payload["data"].(map[string]interface{})
+	binStep, _ := data["binStep"].(float64)
+	if !approx(binStep, 1.0, 1e-9) {
+		t.Errorf("binStep = %v, want 1.0 (1%% of mark)", binStep)
 	}
-	bins, _ := payload["bins"].([]interface{})
-	if len(bins) != 13 {
-		t.Fatalf("bins length = %d, want 13 (±6 around mark)", len(bins))
+	bins, _ := data["bins"].([]interface{})
+	if len(bins) != 2*heatmapHalfRange+1 {
+		t.Fatalf("bins length = %d, want %d (±%d around mark)", len(bins), 2*heatmapHalfRange+1, heatmapHalfRange)
 	}
 
 	requiredKeys := []string{
 		"bucketStartPrice", "bucketEndPrice", "px", "longCost", "shortCost", "longLiq", "shortLiq",
 	}
-	// The mark bin is index 6 (dist 0). Its weight is 1.0.
-	totalW := 1.0
-	for d := 1; d <= 6; d++ {
-		totalW += 2.0 / (float64(d) * float64(d))
-	}
 	oiUSD := a.OI * a.Mark // 1000 USD pool
-	wantCenterLong := oiUSD / totalW
+	fundTilt := math.Min(1, math.Max(-1, a.Funding/0.002))
+	longFrac := math.Min(0.55, math.Max(0.45, 0.5+0.05*fundTilt))
+	longPool := oiUSD * longFrac
+	shortPool := oiUSD * (1 - longFrac)
 
-	var centerCost, centerLiq, centerShort float64
+	// Cost weight: a mid-band cluster around mark, EXACTLY 0 at/outside it.
+	costW := func(d float64) float64 {
+		ad := math.Abs(d)
+		if ad >= float64(heatmapMidBand) {
+			return 0
+		}
+		return 1 - (ad/float64(heatmapMidBand))*(ad/float64(heatmapMidBand))
+	}
+	totalW := 0.0
+	for d := -heatmapHalfRange; d <= heatmapHalfRange; d++ {
+		totalW += costW(float64(d))
+	}
+	wantCenterLong := longPool * costW(0) / totalW
+	wantCenterShort := shortPool * costW(0) / totalW
+
+	var centerLong, centerShort float64
+	markIdx := heatmapHalfRange
 	markBinFound := false
 	for i, b := range bins {
 		bin, _ := b.(map[string]interface{})
@@ -203,40 +218,201 @@ func TestHeatmapUSDScaleAndSchema(t *testing.T) {
 				t.Fatalf("bin[%d] missing required key %q (keys=%v)", i, k, bin)
 			}
 		}
-		if i == 6 {
-			centerCost, _ = bin["longCost"].(float64)
+		if i == markIdx {
+			centerLong, _ = bin["longCost"].(float64)
 			centerShort, _ = bin["shortCost"].(float64)
-			centerLiq, _ = bin["longLiq"].(float64)
 			px, _ := bin["px"].(float64)
-			if !approx(px, 100.05, 1e-6) {
-				t.Errorf("mark bin px = %v, want 100.05", px)
+			if !approx(px, 100.5, 1e-6) {
+				t.Errorf("mark bin px = %v, want 100.5", px)
 			}
 			markBinFound = true
 		}
 	}
 	if !markBinFound {
-		t.Fatal("mark bin (index 6) not found")
+		t.Fatalf("mark bin (index %d) not found", markIdx)
 	}
 
-	// USD-scale: positive funding -> longCost holds the pool, shortCost is 0.
-	if !approx(centerCost, wantCenterLong, 0.01) {
-		t.Errorf("mark-bin longCost = %.4f, want %.4f (USD pool %v/totalW)", centerCost, wantCenterLong, oiUSD)
+	// BOTH sides carry cost at the mark bin; positive funding favours long.
+	if !approx(centerLong, wantCenterLong, 0.01) {
+		t.Errorf("mark-bin longCost = %.4f, want %.4f (longPool/totalW)", centerLong, wantCenterLong)
 	}
-	if centerShort != 0 {
-		t.Errorf("mark-bin shortCost = %v, want 0 (positive funding)", centerShort)
+	if !approx(centerShort, wantCenterShort, 0.01) {
+		t.Errorf("mark-bin shortCost = %.4f, want %.4f (shortPool/totalW)", centerShort, wantCenterShort)
 	}
-	// longLiq is the cost-spike proxy fraction.
-	if !approx(centerLiq, centerCost*0.2, 0.01) {
-		t.Errorf("mark-bin longLiq = %.4f, want %.4f (0.2× longCost)", centerLiq, centerCost*0.2)
+	if centerLong <= 0 || centerShort <= 0 {
+		t.Errorf("both sides must hold cost, got longCost=%v shortCost=%v", centerLong, centerShort)
 	}
-	// USD-scale sanity: a positive funding pool must render meaningful USD
-	// (> 0 and finite), never a raw base-coin notional.
-	if centerCost <= 0 || math.IsInf(centerCost, 0) || math.IsNaN(centerCost) {
-		t.Errorf("longCost not a sane USD value: %v", centerCost)
+	if centerLong <= centerShort {
+		t.Errorf("positive funding should tilt cost toward long, got long=%v short=%v", centerLong, centerShort)
+	}
+	// Mild tilt: the two sides stay near-balanced like claw402's ~53M/51M.
+	if centerLong > centerShort*1.5 || centerShort > centerLong*1.5 {
+		t.Errorf("cost should be near-balanced, got long=%v short=%v", centerLong, centerShort)
+	}
+	// USD-scale sanity: cost is meaningful USD, never a raw base-coin notional.
+	if centerLong <= 0 || math.IsInf(centerLong, 0) || math.IsNaN(centerLong) {
+		t.Errorf("longCost not a sane USD value: %v", centerLong)
+	}
+
+	// costAddrs/liqAddrs are plausible non-zero proxies, not 0.
+	costAddrs, _ := data["costAddrs"].(float64)
+	liqAddrs, _ := data["liqAddrs"].(float64)
+	if costAddrs <= 0 || liqAddrs <= 0 {
+		t.Errorf("costAddrs/liqAddrs should be non-zero, got %v / %v", costAddrs, liqAddrs)
 	}
 }
 
-func TestHeatmapNegativeFundingFlipsToShortSide(t *testing.T) {
+func TestHeatmapRealPatternCostClusterLiqFanout(t *testing.T) {
+	a := &asset{Symbol: "BTC", MarketType: "core_perp", Category: "crypto",
+		Mark: 100, PrevDay: 100, Funding: 0.001, OI: 10}
+	s := testService([]*asset{a})
+
+	raw, err := s.Heatmap("BTC")
+	if err != nil {
+		t.Fatalf("Heatmap error: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("decode heatmap: %v", err)
+	}
+	data, _ := payload["data"].(map[string]interface{})
+	bins, _ := data["bins"].([]interface{})
+	markIdx := heatmapHalfRange
+
+	// Collect per-bin longCost/longLiq/shortCost/shortLiq.
+	type row struct{ lc, ll, sc, sl float64 }
+	rows := make([]row, len(bins))
+	for i, b := range bins {
+		bin, _ := b.(map[string]interface{})
+		rows[i] = row{
+			lc: bin["longCost"].(float64),
+			ll: bin["longLiq"].(float64),
+			sc: bin["shortCost"].(float64),
+			sl: bin["shortLiq"].(float64),
+		}
+	}
+
+	// (b) Cost lives ONLY in the MID band (|d| < midBand): present (both sides,
+	// near-balanced) there and EXACTLY 0 in the far-low and far-high bins.
+	maxLong, maxLongIdx := rows[0].lc, 0
+	for i, r := range rows {
+		if r.lc > maxLong {
+			maxLong, maxLongIdx = r.lc, i
+		}
+	}
+	if maxLongIdx != markIdx {
+		t.Errorf("cost cluster peak at bin %d, want mark bin %d", maxLongIdx, markIdx)
+	}
+	// Cost decays within the band and is exactly 0 at/outside its boundary.
+	for d := 1; d < heatmapMidBand; d++ {
+		if rows[markIdx+d].lc >= rows[markIdx+d-1].lc || rows[markIdx-d].lc >= rows[markIdx-d+1].lc {
+			t.Errorf("cost should decay away from mark within the band at d=%d", d)
+		}
+	}
+	for d := heatmapMidBand; d <= heatmapHalfRange; d++ {
+		if rows[markIdx+d].lc != 0 || rows[markIdx+d].sc != 0 {
+			t.Errorf("far-high bin d=%d must have cost EXACTLY 0, got long=%v short=%v", d, rows[markIdx+d].lc, rows[markIdx+d].sc)
+		}
+		if rows[markIdx-d].lc != 0 || rows[markIdx-d].sc != 0 {
+			t.Errorf("far-low bin d=%d must have cost EXACTLY 0, got long=%v short=%v", d, rows[markIdx-d].lc, rows[markIdx-d].sc)
+		}
+	}
+	// Both cost sides present and near-balanced in the band.
+	for d := 0; d < heatmapMidBand; d++ {
+		lc, sc := rows[markIdx-d].lc, rows[markIdx-d].sc
+		if lc <= 0 || sc <= 0 {
+			t.Errorf("mid-band bin d=%d must have cost on both sides, got long=%v short=%v", d, lc, sc)
+		}
+		if lc > sc*1.5 || sc > lc*1.5 {
+			t.Errorf("mid-band cost should be near-balanced at d=%d, got long=%v short=%v", d, lc, sc)
+		}
+	}
+
+	// (c) Liquidation fans out far: long-liq ONLY below mark, short-liq ONLY
+	// above mark, present on every side bin — so far-low bins are longLiq-only
+	// and far-high bins are shortLiq-only (cost already verified 0 there).
+	belowLongLiq, aboveShortLiq := 0, 0
+	peakLongIdx, peakShortIdx := -1, -1
+	for i, r := range rows {
+		switch {
+		case i < markIdx:
+			if r.sl != 0 {
+				t.Errorf("bin %d (below mark) must have no shortLiq, got %v", i, r.sl)
+			}
+			if r.ll > 0 {
+				belowLongLiq++
+				if peakLongIdx < 0 || r.ll > rows[peakLongIdx].ll {
+					peakLongIdx = i
+				}
+			}
+		case i > markIdx:
+			if r.ll != 0 {
+				t.Errorf("bin %d (above mark) must have no longLiq, got %v", i, r.ll)
+			}
+			if r.sl > 0 {
+				aboveShortLiq++
+				if peakShortIdx < 0 || r.sl > rows[peakShortIdx].sl {
+					peakShortIdx = i
+				}
+			}
+		default:
+			if r.ll != 0 || r.sl != 0 {
+				t.Errorf("mark bin must have no liq, got longLiq=%v shortLiq=%v", r.ll, r.sl)
+			}
+		}
+	}
+	if belowLongLiq < heatmapHalfRange-1 {
+		t.Errorf("long-liq should fan across every below-mark bin, got %d", belowLongLiq)
+	}
+	if aboveShortLiq < heatmapHalfRange-1 {
+		t.Errorf("short-liq should fan across every above-mark bin, got %d", aboveShortLiq)
+	}
+	if peakLongIdx < 0 || peakLongIdx >= markIdx {
+		t.Errorf("long-liq peak should be below mark, got %d", peakLongIdx)
+	}
+	if peakShortIdx < 0 || peakShortIdx <= markIdx {
+		t.Errorf("short-liq peak should be above mark, got %d", peakShortIdx)
+	}
+
+	// (d) Liquidation prominence: the liq peak is a substantial fraction of the
+	// mark cost (claw402 ~33%; target 15%..50%) so the map is not cost-dominated.
+	markCost := rows[markIdx].lc
+	peakLiq := rows[peakLongIdx].ll
+	if peakLiq <= 0 || peakLiq < 0.15*markCost || peakLiq > 0.5*markCost {
+		t.Errorf("long-liq peak %.4f should be 15%%..50%% of mark cost %.4f (ratio %.3f)",
+			peakLiq, markCost, peakLiq/markCost)
+	}
+
+	// (e) Cost and liq CO-OCCUR in the mid band (as real claw402 data does).
+	cooccur := 0
+	for _, r := range rows {
+		if r.lc > 0 && r.ll > 0 {
+			cooccur++
+		}
+	}
+	if cooccur == 0 {
+		t.Error("expected cost and liq to co-occur in some bins (no strict separation)")
+	}
+
+	// (e) Ladder fully populated: every row has at least one non-zero metric,
+	// so the frontend row-filter leaves no gap rows.
+	for i, r := range rows {
+		if r.lc == 0 && r.ll == 0 && r.sc == 0 && r.sl == 0 {
+			t.Errorf("bin %d is empty (gap row)", i)
+		}
+	}
+
+	// Deterministic: two calls produce byte-identical output.
+	raw2, err := s.Heatmap("BTC")
+	if err != nil {
+		t.Fatalf("Heatmap error (2nd call): %v", err)
+	}
+	if string(raw) != string(raw2) {
+		t.Error("Heatmap output is not deterministic across calls")
+	}
+}
+
+func TestHeatmapNegativeFundingTiltsShortSide(t *testing.T) {
 	a := &asset{Symbol: "BTC", MarketType: "core_perp", Category: "crypto",
 		Mark: 100, PrevDay: 100, Funding: -0.001, OI: 10}
 	s := testService([]*asset{a})
@@ -246,15 +422,19 @@ func TestHeatmapNegativeFundingFlipsToShortSide(t *testing.T) {
 	}
 	var payload map[string]interface{}
 	_ = json.Unmarshal(raw, &payload)
-	bins, _ := payload["bins"].([]interface{})
-	bin, _ := bins[6].(map[string]interface{})
+	data, _ := payload["data"].(map[string]interface{})
+	bins, _ := data["bins"].([]interface{})
+	bin, _ := bins[heatmapHalfRange].(map[string]interface{})
 	longCost, _ := bin["longCost"].(float64)
 	shortCost, _ := bin["shortCost"].(float64)
-	if longCost != 0 {
-		t.Errorf("negative funding should zero the long side, got longCost=%v", longCost)
+	if longCost <= 0 {
+		t.Errorf("negative funding must still leave cost on the long side, got longCost=%v", longCost)
 	}
 	if shortCost <= 0 {
-		t.Errorf("negative funding should push the pool to the short side, got shortCost=%v", shortCost)
+		t.Errorf("short side should hold cost, got shortCost=%v", shortCost)
+	}
+	if shortCost <= longCost {
+		t.Errorf("negative funding should tilt cost toward short, got long=%v short=%v", longCost, shortCost)
 	}
 }
 
