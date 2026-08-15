@@ -14,17 +14,19 @@ import (
 // signal products. OI holds the previous poll's open interest so OI-delta can
 // be computed (a ranking factor); it is zero until the second ingest.
 type asset struct {
-	Symbol       string  // canonical symbol, e.g. "BTC" (core) or "xyz:NVDA" (hip3)
-	MarketType   string  // "core_perp" for crypto, "hip3_perp" for xyz/TradeFi
-	Category     string  // "crypto" or a stock/commodity/index/forex category
-	Mark         float64 // mark price
-	PrevDay      float64 // previous-day reference price (24h delta)
-	Funding      float64 // current funding rate
-	OI           float64 // current open interest (base-coin units)
-	OIPrev       float64 // previous poll open interest
-	Oracle       float64 // oracle price
-	MaxLeverage  int
-	SzDecimals   int
+	Symbol      string  // canonical symbol, e.g. "BTC" (core) or "xyz:NVDA" (hip3)
+	MarketType  string  // "core_perp" for crypto, "hip3_perp" for xyz/TradeFi
+	Category    string  // "crypto" or a stock/commodity/index/forex category
+	Mark        float64 // mark price
+	PrevDay     float64 // previous-day reference price (24h delta)
+	Funding     float64 // current funding rate
+	OI          float64 // current open interest (base-coin units)
+	OIPrev      float64 // previous poll open interest
+	Oracle      float64 // oracle price
+	Score       float64 // last composite z-score (populated by Rank; 0 until ranked)
+	MaxLeverage int
+	SzDecimals  int
+	Pineify     *PineifySnapshot // optional Pineify enrichment overlay (nil unless token set)
 }
 
 func (a *asset) OIDelta() float64 { return a.OI - a.OIPrev }
@@ -66,14 +68,15 @@ func (s *Service) Snapshot() (map[string]*asset, []string, time.Time, error) {
 }
 
 // Ingest fetches the current Hyperliquid cross-section for both the default
-// (crypto core_perp) and xyz (hip3_perp TradeFi) perp dexs and swaps it into
-// the snapshot, carrying OI-delta forward from the previous snapshot.
-func (s *Service) Ingest() error {
+// (crypto core_perp) and xyz (hip3_perp TradeFi) perp dexs, enriches the
+// mappable subset with Pineify (when enabled), and swaps it into the snapshot,
+// carrying OI-delta forward from the previous snapshot.
+func (s *Service) Ingest(ctx context.Context) error {
 	assets := make(map[string]*asset)
 	var order []string
 
 	// Default perp dex -> core_perp (crypto).
-	if err := s.ingestDex("", "core_perp", assets); err != nil {
+	if err := s.ingestDex(ctx, "", "core_perp", assets); err != nil {
 		s.mu.Lock()
 		s.ingestErr = err
 		s.lastIngest = time.Now()
@@ -81,12 +84,18 @@ func (s *Service) Ingest() error {
 		return err
 	}
 	// xyz perp dex -> hip3_perp (TradeFi).
-	if err := s.ingestDex("xyz", "hip3_perp", assets); err != nil {
+	if err := s.ingestDex(ctx, "xyz", "hip3_perp", assets); err != nil {
 		s.mu.Lock()
 		s.ingestErr = err
 		s.lastIngest = time.Now()
 		s.mu.Unlock()
 		return err
+	}
+
+	// Enrich the mappable subset with Pineify overlays (rate-limited, gated by
+	// token presence, never blocks the snapshot swap on failure).
+	if s.pineifyEnabled() {
+		s.enrichWithPineify(ctx, assets)
 	}
 
 	for sym := range assets {
@@ -110,8 +119,8 @@ func (s *Service) Ingest() error {
 
 // ingestDex fetches one Hyperliquid dex and adds assets to the map, tagging
 // market type and category.
-func (s *Service) ingestDex(dex, marketType string, assets map[string]*asset) error {
-	snap, err := hyperliquid.GetMarketSnapshot(s.ingestCtx(), s.httpClient, dex)
+func (s *Service) ingestDex(ctx context.Context, dex, marketType string, assets map[string]*asset) error {
+	snap, err := hyperliquid.GetMarketSnapshot(ctx, s.httpClient, dex)
 	if err != nil {
 		return err
 	}
@@ -138,15 +147,11 @@ func (s *Service) ingestDex(dex, marketType string, assets map[string]*asset) er
 	return nil
 }
 
-func (s *Service) ingestCtx() context.Context {
-	return context.Background()
-}
-
 // Start runs the ingest worker on Config.Interval until ctx is cancelled. It
 // ingests once immediately, then on a ticker, backing off on failure.
 func (s *Service) Start(ctx context.Context) {
 	// Immediate first ingest.
-	if err := s.Ingest(); err != nil {
+	if err := s.Ingest(ctx); err != nil {
 		_ = err
 	}
 	interval := s.cfg.Interval
@@ -160,7 +165,7 @@ func (s *Service) Start(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := s.Ingest(); err != nil {
+			if err := s.Ingest(ctx); err != nil {
 				s.mu.Lock()
 				s.ingestErr = err
 				s.lastIngest = time.Now()

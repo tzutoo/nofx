@@ -2,8 +2,10 @@ package signal
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"nofx/provider/hyperliquid"
@@ -104,6 +106,14 @@ func (s *Service) Rank(limit int) *vergex.SignalRankingData {
 		sorted = sorted[:limit]
 	}
 
+	boost := s.cfg != nil && s.cfg.PineifyBoostEnabled
+	hardReject := boost && s.cfg != nil && s.cfg.PineifyHardReject
+	minConv := 0.7
+	if s.cfg != nil && s.cfg.PineifyMinConviction > 0 {
+		minConv = s.cfg.PineifyMinConviction
+	}
+
+	var demoted []vergex.SignalRankItem
 	for rank, sym := range sorted {
 		a := assets[sym]
 		composite := rawScores[sym]
@@ -111,7 +121,7 @@ func (s *Service) Rank(limit int) *vergex.SignalRankingData {
 		if maxAbs > 0 {
 			conf = math.Min(1, math.Abs(composite)/maxAbs)
 		}
-		items = append(items, vergex.SignalRankItem{
+		item := vergex.SignalRankItem{
 			Rank:       rank + 1,
 			Symbol:     a.Symbol,
 			MarketType: a.MarketType,
@@ -119,10 +129,46 @@ func (s *Service) Rank(limit int) *vergex.SignalRankingData {
 			Confidence: conf,
 			Score:      composite,
 			Category:   a.Category,
-		})
+		}
+		// Carry the per-symbol z onto the asset so SignalLab can emit the
+		// compositeZ/score scalars without recomputing the cohort.
+		a.Score = composite
+
+		// Opt-in Pineify qualifier: when enabled, a mappable item with full
+		// coverage whose Pineify bias opposes the HL bias with sufficient
+		// conviction is demoted (or excluded with hard-reject).
+		if boost && qualifiesForPineifyQualifier(a, minConv) {
+			if hardReject {
+				continue
+			}
+			// Halve the magnitude so it ranks below uncontested signals.
+			item.Score = composite / 2
+			demoted = append(demoted, item)
+			continue
+		}
+		items = append(items, item)
 	}
+	items = append(items, demoted...)
 
 	return &vergex.SignalRankingData{Items: items}
+}
+
+// qualifiesForPineifyQualifier reports whether a mappable asset's full-coverage
+// Pineify bias opposes the HL bias strongly enough to demote/reject it.
+func qualifiesForPineifyQualifier(a *asset, minConv float64) bool {
+	if a == nil || a.Pineify == nil {
+		return false
+	}
+	if a.Pineify.Coverage != "full" || a.Pineify.Bias == "" || a.Score == 0 {
+		return false
+	}
+	if a.Pineify.Conviction < minConv {
+		return false
+	}
+	hlBias := biasToken(a.Score)
+	pfBias := a.Pineify.Bias
+	return (hlBias == "bullish" && pfBias == "bearish") ||
+		(hlBias == "bearish" && pfBias == "bullish")
 }
 
 // biasToken maps the composite score to the exact tokens the engine branches
@@ -377,14 +423,142 @@ func (s *Service) SignalLab(symbol string) (json.RawMessage, error) {
 			"detail":    "Funding rate × open interest exposure.",
 		},
 	}
+	// Append Pineify overlay rows (rate-limited enrichment, when available).
+	// Respects the formatter's 8-row cap: 3 core rows + up to 3 Pineify rows.
+	if p := a.Pineify; p != nil && p.Coverage != "" {
+		if p.Trend != "" || p.RSI > 0 || p.ADX > 0 {
+			dimensions = append(dimensions, map[string]interface{}{
+				"family":     "Trend",
+				"label":      "Pineify Technical",
+				"direction":  emptyDash(p.Bias),
+				"strength":   taStrengthWord(p.RSI, p.ADX),
+				"percentile": pct(p.Conviction),
+				"detail":     pineifyTADetail(p),
+			})
+		}
+		if len(p.Events) > 0 {
+			dimensions = append(dimensions, map[string]interface{}{
+				"family":     "Catalyst",
+				"label":      "Upcoming Events",
+				"direction":  "",
+				"strength":   "medium",
+				"percentile": pct(p.Conviction),
+				"detail":     pineifyEventsDetail(p.Events),
+			})
+		}
+		if p.Rating.Action != "" || p.Rating.Score > 0 {
+			dimensions = append(dimensions, map[string]interface{}{
+				"family":     "Analyst",
+				"label":      "Pineify Rating",
+				"direction":  emptyDash(p.Bias),
+				"strength":   strengthWord(p.Rating.Score, 100),
+				"percentile": pct(p.Conviction),
+				"detail":     fmt.Sprintf("Pineify overlay: %s (score %.0f)", emptyDash(p.Rating.Action), p.Rating.Score),
+			})
+		}
+	}
 	payload := map[string]interface{}{
-		"symbol":    a.Symbol,
+		"symbol":     a.Symbol,
 		"marketType": a.MarketType,
-		"bias":      biasToken(a.Mark - a.PrevDay),
+		"bias":       biasToken(a.Mark - a.PrevDay),
 		"confidence": confidenceWord(a.Mark, a.PrevDay),
 		"dimensions": dimensions,
 	}
+	// Emit compositeZ/score scalars from the carried per-symbol z when ranked.
+	if a.Score != 0 {
+		payload["compositeZ"] = trimFloat8(a.Score)
+		payload["score"] = trimFloat8(a.Score)
+	}
 	return json.Marshal(payload)
+}
+
+// emptyDash renders "" as "-" for table cells.
+func emptyDash(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
+}
+
+// taStrengthWord maps RSI/ADX to a strength word for the Pineify technical row.
+func taStrengthWord(rsi, adx float64) string {
+	if adx >= 25 {
+		return "strong"
+	}
+	if rsi >= 70 || rsi <= 30 {
+		return "high"
+	}
+	if rsi >= 60 || rsi <= 40 {
+		return "medium"
+	}
+	return "low"
+}
+
+// pineifyTADetail builds the technical-row detail text.
+func pineifyTADetail(p *PineifySnapshot) string {
+	var parts []string
+	if p.Trend != "" {
+		parts = append(parts, "trend="+p.Trend)
+	}
+	if p.RSI > 0 {
+		parts = append(parts, fmt.Sprintf("RSI=%.1f", p.RSI))
+	}
+	if p.ADX > 0 {
+		parts = append(parts, fmt.Sprintf("ADX=%.1f", p.ADX))
+	}
+	if len(parts) == 0 {
+		return "Pineify technical overlay."
+	}
+	return "Pineify overlay: " + strings.Join(parts, ", ") + "."
+}
+
+// pineifyEventsDetail summarizes up to 3 upcoming events.
+func pineifyEventsDetail(events []PineifyEvent) string {
+	if len(events) == 0 {
+		return "Pineify overlay: upcoming events."
+	}
+	var parts []string
+	limit := len(events)
+	if limit > 3 {
+		limit = 3
+	}
+	for _, e := range events[:limit] {
+		name := e.Name
+		if name == "" {
+			name = e.Type
+		}
+		if name == "" {
+			continue
+		}
+		if e.Date != "" {
+			parts = append(parts, name+" ("+e.Date+")")
+		} else {
+			parts = append(parts, name)
+		}
+	}
+	if len(parts) == 0 {
+		return "Pineify overlay: upcoming events."
+	}
+	return "Upcoming: " + strings.Join(parts, "; ") + "."
+}
+
+// pct formats a 0..1 conviction as a percent string ("" when <= 0).
+func pct(v float64) string {
+	if v <= 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%.0f%%", v*100)
+}
+
+// trimFloat8 renders a float with up to 8 decimals, trimmed.
+func trimFloat8(v float64) string {
+	s := fmt.Sprintf("%.8f", v)
+	s = strings.TrimRight(s, "0")
+	s = strings.TrimRight(s, ".")
+	if s == "-0" {
+		return "0"
+	}
+	return s
 }
 
 func strengthWord(v, base float64) string {

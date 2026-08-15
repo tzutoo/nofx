@@ -22,19 +22,19 @@ func NewHTTPHandler(s *Service) http.Handler {
 func (s *Service) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _, last, _ := s.Snapshot()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":         true,
+		"ok":          true,
 		"last_ingest": last.UTC().Format(time.RFC3339),
-		"age_ms":     time.Since(last).Milliseconds(),
+		"age_ms":      time.Since(last).Milliseconds(),
 	})
 }
 
 func (s *Service) handleProducts(w http.ResponseWriter, r *http.Request) {
 	_, _, last, _ := s.Snapshot()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"ranking": "ok",
-		"signal_lab": "ok",
-		"heatmap":  "ok",
-		"netflow":  "ok",
+		"ranking":     "ok",
+		"signal_lab":  "ok",
+		"heatmap":     "ok",
+		"netflow":     "ok",
 		"last_ingest": last.UTC().Format(time.RFC3339),
 	})
 }

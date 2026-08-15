@@ -72,10 +72,10 @@ func TestRankDeterministicCompositeConfidenceBias(t *testing.T) {
 	// Every non-constant factor in this fixture has z-magnitude = sqrt(1.5).
 	m := math.Sqrt(1.5)
 	wantScore := map[string]float64{
-		"AAA":       0.45 * m,                // +m price, 0 funding, 0 oidelta
-		"BBB":      -0.15 * m,                // 0 price, -m funding, +m oidelta
-		"CCC":      -0.30 * m,                // -m price, +m funding, -m oidelta
-		"xyz:NVDA": 0,                        // std=0 cohort -> all z=0
+		"AAA":      0.45 * m,  // +m price, 0 funding, 0 oidelta
+		"BBB":      -0.15 * m, // 0 price, -m funding, +m oidelta
+		"CCC":      -0.30 * m, // -m price, +m funding, -m oidelta
+		"xyz:NVDA": 0,         // std=0 cohort -> all z=0
 	}
 	wantBias := map[string]string{
 		"AAA": "bullish", "BBB": "bearish", "CCC": "bearish", "xyz:NVDA": "neutral",
@@ -85,10 +85,10 @@ func TestRankDeterministicCompositeConfidenceBias(t *testing.T) {
 	// Rank order by |composite| descending: AAA, CCC, BBB, xyz:NVDA.
 	wantRank := map[string]int{"AAA": 1, "CCC": 2, "BBB": 3, "xyz:NVDA": 4}
 	wantConf := map[string]float64{
-		"AAA":       1.0,
-		"CCC":       (0.30 * m) / maxAbs,
-		"BBB":       (0.15 * m) / maxAbs,
-		"xyz:NVDA":  0.0,
+		"AAA":      1.0,
+		"CCC":      (0.30 * m) / maxAbs,
+		"BBB":      (0.15 * m) / maxAbs,
+		"xyz:NVDA": 0.0,
 	}
 
 	for sym, want := range wantScore {
