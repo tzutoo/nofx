@@ -413,6 +413,14 @@ Steps **2+3+4** are the atomic unit and must land as one commit: step 3 changes 
 
 **Net judgment:** Ranking is faithful and safe to depend on. Signal Lab and Heatmap reproduce the *schema* but not the *semantics* — the free products the AI leans on for confirmation and stop/target placement are proxies or fabricated. **R1 (fabricated liquidation feeding stop/target logic) is the single highest residual risk** to real trading decisions.
 
+### 8.6 Signal Matrix selection path (dashboard)
+
+The dashboard's Signal Matrix is populated from **`/api/vergex/signal-ranking?marketType=all&limit=30`** (i.e. `SignalRankingPath`), not a dedicated endpoint.
+
+- **Chain:** `TerminalDashboard` → `api.getSignalRanking(..., marketType='all', limit=30)` (polled ~5m) → backend `handleVergexSignalRanking` → `vergex.GetSignalRanking` → `FilterSignalRankingItems(items, 'all', 30)` → `SignalMatrix` renders `items` (top **18** by `rank`).
+- **On dev (paid):** the returned 30 are claw402's proprietary `compositeZ` ranking of the whole universe; the matrix shows its top 18 (e.g. NBIS/CXMT/SKHY/NVDA…).
+- **On feature (free):** the same endpoint serves our per-cohort **z-score** ranking instead — a different symbol set/order. This is the §8.1 parity gap (no crowding/leverage/cascade factor), not an API-shape difference: the wire shape and matrix rendering are identical, only the ranking *values* differ.
+
 ---
 
 ## References
