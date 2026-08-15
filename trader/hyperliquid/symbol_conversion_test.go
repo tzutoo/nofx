@@ -16,3 +16,18 @@ func TestConvertSymbolToHyperliquidXYZAliases(t *testing.T) {
 		}
 	}
 }
+
+func TestLeverageCoinStripsXYZPrefix(t *testing.T) {
+	cases := map[string]string{
+		"xyz:CL":       "CL",
+		"xyz:USAR":     "USAR",
+		"xyz:TSLA":     "TSLA",
+		"HYPEUSDT":     "HYPE", // core perp, no prefix to strip
+		"SAMSUNG-USDC": "SMSN",
+	}
+	for input, want := range cases {
+		if got := leverageCoin(input); got != want {
+			t.Fatalf("leverageCoin(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

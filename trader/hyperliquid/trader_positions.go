@@ -152,8 +152,7 @@ func (t *HyperliquidTrader) SetMarginMode(symbol string, isCrossMargin bool) err
 
 // SetLeverage sets leverage
 func (t *HyperliquidTrader) SetLeverage(symbol string, leverage int) error {
-	// Hyperliquid symbol format (remove USDT suffix)
-	coin := convertSymbolToHyperliquid(symbol)
+	coin := leverageCoin(symbol)
 
 	// Call UpdateLeverage (leverage int, name string, isCross bool)
 	// Third parameter: true=cross margin mode, false=isolated margin mode
@@ -164,4 +163,15 @@ func (t *HyperliquidTrader) SetLeverage(symbol string, leverage int) error {
 
 	logger.Infof("  ✓ %s leverage switched to %dx", symbol, leverage)
 	return nil
+}
+
+// leverageCoin derives the coin name for the UpdateLeverage API. That call's
+// CoinToAsset lookup uses the BARE coin name (no xyz: prefix) — the SDK
+// metadata maps universe[].name (e.g. "CL") to the asset index.
+// FormatCoinForAPI returns the xyz:-prefixed form which is correct for the
+// order API but fails CoinToAsset ("coin not found in info"), silently leaving
+// the account at whatever leverage it previously had. Stripping the prefix here
+// makes the configured leverage actually take effect for xyz-dex assets.
+func leverageCoin(symbol string) string {
+	return strings.TrimPrefix(convertSymbolToHyperliquid(symbol), "xyz:")
 }
