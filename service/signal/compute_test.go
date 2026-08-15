@@ -439,6 +439,50 @@ func TestHeatmapNegativeFundingTiltsShortSide(t *testing.T) {
 	}
 }
 
+func TestAssetForResolvesXYZFallback(t *testing.T) {
+	// Seed the snapshot with: a bare crypto asset (2Z), an already-prefixed xyz
+	// asset (xyz:SP500, xyz:USAR), and a newer xyz asset (xyz:NBIS) that is NOT
+	// in the hardcoded provider lists. assetFor must resolve bare "NBIS" to the
+	// stored xyz:NBIS via the xyz:<base> fallback, while crypto and already-
+	// prefixed symbols resolve unchanged.
+	assets := []*asset{
+		{Symbol: "2Z", MarketType: "core_perp", Category: "crypto",
+			Mark: 100, PrevDay: 100, Funding: 0.001, OI: 10},
+		{Symbol: "xyz:SP500", MarketType: "hip3_perp", Category: "Equities",
+			Mark: 5000, PrevDay: 5000, Funding: 0.0, OI: 1},
+		{Symbol: "xyz:USAR", MarketType: "hip3_perp", Category: "Forex",
+			Mark: 1.2, PrevDay: 1.2, Funding: 0.0, OI: 1},
+		{Symbol: "xyz:NBIS", MarketType: "hip3_perp", Category: "Equities",
+			Mark: 30, PrevDay: 30, Funding: 0.0, OI: 1},
+	}
+	s := testService(assets)
+
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"NBIS", "xyz:NBIS"},       // stale-list asset, bare form -> xyz: fallback
+		{"2Z", "2Z"},               // crypto bare symbol -> unchanged
+		{"xyz:SP500", "xyz:SP500"}, // already-prefixed -> unchanged
+		{"xyz:USAR", "xyz:USAR"},   // already-prefixed -> unchanged
+	}
+	for _, tc := range cases {
+		a, ok := s.assetFor(tc.input)
+		if !ok {
+			t.Errorf("assetFor(%q) not found", tc.input)
+			continue
+		}
+		if a.Symbol != tc.want {
+			t.Errorf("assetFor(%q) resolved to %q, want %q", tc.input, a.Symbol, tc.want)
+		}
+	}
+
+	// Unknown symbols still fail.
+	if _, ok := s.assetFor("ETH"); ok {
+		t.Error("assetFor(ETH) should not resolve")
+	}
+}
+
 func TestHeatmapUnknownSymbolReturnsError(t *testing.T) {
 	s := testService([]*asset{{Symbol: "BTC", MarketType: "core_perp", Category: "crypto",
 		Mark: 100, PrevDay: 100, Funding: 0.001, OI: 10}})

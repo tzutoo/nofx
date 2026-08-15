@@ -733,6 +733,14 @@ func negative(list []entry) []entry {
 
 // assetFor resolves an asset by symbol, tolerating the user-facing form without
 // the xyz: prefix (e.g. "SP500" for the stored "xyz:SP500").
+//
+// Fallback order: exact match -> FormatCoinForAPI -> xyz:<bare base>. The last
+// fallback makes the snapshot authoritative for xyz assets that are NOT in the
+// (possibly stale) hardcoded provider lists (e.g. NBIS, CXMT, SKHY): those are
+// stored and served by the proxy as "xyz:NBIS", so a bare "NBIS" that neither
+// matches exactly nor via FormatCoinForAPI still resolves by trying the prefixed
+// form directly. Crypto bare symbols (e.g. "2Z") match on the exact/first
+// fallback and are unaffected.
 func (s *Service) assetFor(symbol string) (*asset, bool) {
 	assets, _, _, _ := s.Snapshot()
 	if a, ok := assets[symbol]; ok {
@@ -741,6 +749,17 @@ func (s *Service) assetFor(symbol string) (*asset, bool) {
 	if formatted := hyperliquid.FormatCoinForAPI(symbol); formatted != symbol {
 		if a, ok := assets[formatted]; ok {
 			return a, true
+		}
+	}
+	// Not xyz:-prefixed yet -> try the stored xyz: form of the bare base, using
+	// the same base extraction the provider uses. This is authoritative from the
+	// snapshot, which knows the true xyz membership (no stale hardcoded list).
+	if !strings.HasPrefix(strings.ToUpper(strings.TrimSpace(symbol)), "XYZ:") {
+		base := hyperliquid.NormalizeCoinBase(symbol)
+		if prefixed := "xyz:" + base; prefixed != symbol {
+			if a, ok := assets[prefixed]; ok {
+				return a, true
+			}
 		}
 	}
 	return nil, false
