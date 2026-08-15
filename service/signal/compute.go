@@ -473,7 +473,7 @@ func (s *Service) SignalLab(symbol string) (json.RawMessage, error) {
 				"label":      "Pineify Technical",
 				"direction":  emptyDash(p.Bias),
 				"strength":   taStrengthWord(p.RSI, p.ADX),
-				"percentile": pct(p.Conviction),
+				"percentile": pctNum(p.Conviction),
 				"detail":     pineifyTADetail(p),
 			})
 		}
@@ -483,7 +483,7 @@ func (s *Service) SignalLab(symbol string) (json.RawMessage, error) {
 				"label":      "Upcoming Events",
 				"direction":  "",
 				"strength":   "medium",
-				"percentile": pct(p.Conviction),
+				"percentile": pctNum(p.Conviction),
 				"detail":     pineifyEventsDetail(p.Events),
 			})
 		}
@@ -493,7 +493,7 @@ func (s *Service) SignalLab(symbol string) (json.RawMessage, error) {
 				"label":      "Pineify Rating",
 				"direction":  emptyDash(p.Bias),
 				"strength":   strengthWord(p.Rating.Score, 100),
-				"percentile": pct(p.Conviction),
+				"percentile": pctNum(p.Conviction),
 				"detail":     fmt.Sprintf("Pineify overlay: %s (score %.0f)", emptyDash(p.Rating.Action), p.Rating.Score),
 			})
 		}
@@ -511,7 +511,17 @@ func (s *Service) SignalLab(symbol string) (json.RawMessage, error) {
 		payload["compositeZ"] = trimFloat8(composite)
 		payload["score"] = trimFloat8(composite)
 	}
-	return json.Marshal(payload)
+	// Wrap under `data` with a `meta` envelope to match the frontend
+	// VergexSignalLabResponse contract ({data:{...}, meta:{...}}). The heatmap
+	// was already data-wrapped; signal-lab was not, so the strategy page read
+	// lab?.data as undefined and rendered "Signal Lab has not loaded yet".
+	return json.Marshal(map[string]interface{}{
+		"data": payload,
+		"meta": map[string]interface{}{
+			"apiVersion": "v1",
+			"chain":      "mainnet",
+		},
+	})
 }
 
 // emptyDash renders "" as "-" for table cells.
@@ -590,12 +600,14 @@ func pineifyEventsDetail(events []PineifyEvent) string {
 	return "Upcoming: " + strings.Join(parts, "; ") + "."
 }
 
-// pct formats a 0..1 conviction as a percent string ("" when <= 0).
-func pct(v float64) string {
+// pctNum renders a 0..1 conviction as a 0-100 number for the signal-lab
+// percentile bar. The frontend expects a numeric percentile (data.ts:
+// percentile?: number), not the old "80%" string, so the bar can render.
+func pctNum(v float64) int {
 	if v <= 0 {
-		return "-"
+		return 0
 	}
-	return fmt.Sprintf("%.0f%%", v*100)
+	return int(v * 100)
 }
 
 // trimFloat8 renders a float with up to 8 decimals, trimmed.

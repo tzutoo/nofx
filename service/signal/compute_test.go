@@ -589,23 +589,25 @@ func TestRankDoesNotMutateSharedScore_AndSignalLabRecomputes(t *testing.T) {
 		t.Fatalf("SignalLab error: %v", err)
 	}
 	var out struct {
-		CompositeZ string `json:"compositeZ"`
-		Score      string `json:"score"`
+		Data struct {
+			CompositeZ string `json:"compositeZ"`
+			Score      string `json:"score"`
+		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
 		t.Fatalf("decode SignalLab: %v", err)
 	}
-	if out.CompositeZ == "" {
+	if out.Data.CompositeZ == "" {
 		t.Fatalf("compositeZ not emitted by SignalLab recompute")
 	}
-	got, err := strconv.ParseFloat(out.CompositeZ, 64)
+	got, err := strconv.ParseFloat(out.Data.CompositeZ, 64)
 	if err != nil {
-		t.Fatalf("parse compositeZ %q: %v", out.CompositeZ, err)
+		t.Fatalf("parse compositeZ %q: %v", out.Data.CompositeZ, err)
 	}
 	if !approx(got, item.Score, 1e-6) {
 		t.Errorf("SignalLab recomputed compositeZ = %v, want %v (matches Rank)", got, item.Score)
 	}
-	if out.Score != out.CompositeZ {
-		t.Errorf("score scalar = %q, want compositeZ %q", out.Score, out.CompositeZ)
+	if out.Data.Score != out.Data.CompositeZ {
+		t.Errorf("score scalar = %q, want compositeZ %q", out.Data.Score, out.Data.CompositeZ)
 	}
 }

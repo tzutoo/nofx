@@ -466,20 +466,26 @@ func TestSignalLabWithPineifyRows(t *testing.T) {
 		t.Fatalf("SignalLab errored: %v", err)
 	}
 	var out struct {
-		Dimensions []map[string]any `json:"dimensions"`
-		CompositeZ string           `json:"compositeZ"`
+		Data struct {
+			Dimensions []map[string]any `json:"dimensions"`
+			CompositeZ string           `json:"compositeZ"`
+		} `json:"data"`
 	}
 	_ = json.Unmarshal(body, &out)
-	if len(out.Dimensions) != 6 {
-		t.Fatalf("dimensions = %d, want 6 (3 core + 3 pineify)", len(out.Dimensions))
+	if len(out.Data.Dimensions) != 6 {
+		t.Fatalf("dimensions = %d, want 6 (3 core + 3 pineify)", len(out.Data.Dimensions))
 	}
-	// Last row should be the Analyst/Pineify Rating row with percentile filled.
-	last := out.Dimensions[len(out.Dimensions)-1]
+	// Last row should be the Analyst/Pineify Rating row with a numeric
+	// percentile (0-100), not a "80%" string.
+	last := out.Data.Dimensions[len(out.Data.Dimensions)-1]
 	if last["family"] != "Analyst" {
 		t.Errorf("last family = %v, want Analyst", last["family"])
 	}
-	if last["percentile"] == "-" || last["percentile"] == nil || last["percentile"] == "" {
-		t.Errorf("pineify row percentile should be filled, got %v", last["percentile"])
+	pctVal, ok := last["percentile"].(float64)
+	if !ok {
+		t.Errorf("pineify row percentile should be a number, got %T %v", last["percentile"], last["percentile"])
+	} else if pctVal < 1 || pctVal > 100 {
+		t.Errorf("pineify row percentile = %v, want within 1..100", pctVal)
 	}
 }
 
