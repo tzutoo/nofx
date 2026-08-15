@@ -174,3 +174,113 @@ Steps 4–6 are the functional unit; step 6's qualifier is off-by-default (deplo
 - Hyperliquid info API: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals
 - Pineify MCP: `https://agents.pineify.app/mcp` (bearer token = env `PINEIFY_MCP_TOKEN`, never committed)
 - `docs/plans/self-built-signal-stack-2026-08-14.md` (§2.6, §3.4, §5, §8)
+
+---
+
+# Implementation Audit (post-implementation) — appended 2026-08-15
+
+> The Pineify integration described above is **already implemented and wired on branch `feat/self-hosted-signal-stack`** (the "Background" §"pineify.go is a stub" line is stale). This audit is the *post-implementation* review. It treats the plan's sections as intent, verifies each against the actual code (`service/signal/pineify.go`, `pineify_client.go`, `pineifymap.go`, `ratelimit.go`, `service.go`, `compute.go`, `config.go`, `http.go`, plus the engine/trader consumption chain), and records what is confirmed, what is corrected, and what remains.
+
+## B.0 Status — BUILT, WIRED, RATE- AND MAPPING-CORRECT
+
+The integration is complete and non-fragmentary:
+- `pineify.go` (566 lines): `PineifySnapshot{...}`, `enrichWithPineify`, `enrichSymbol`, `mappableBoard`, parsers (`parsePineifyTA/Events/Rating`), `computeBias`, degraded handling.
+- `pineify_client.go` (261 lines): real MCP JSON-RPC client — `initialize` handshake + `tools/call`, plain-JSON and SSE envelopes, `extractToolResult` prefers `structuredContent`.
+- `pineifymap.go`: `pineifyTicker(base)` trusts `XYZCategory=="stock"` + a hardened `pineifyNonMappable` exclusion set.
+- `ratelimit.go`: `tokenBucket` (rate/min refill, `acquire(ctx)`).
+- `config.go`: `PineifyMCPToken`, `PineifyBaseURL`, `PineifyRatePerMinute`, `PineifyBoostEnabled`, `PineifyHardReject`, `PineifyMinConviction`.
+- `service.go`: `asset.Pineify`, `Ingest()` hook (gated by token), carry-forward of last-known snapshot, `SetPriority`/`Priority`.
+- `compute.go`: `Rank()` boost qualifier (`qualifiesForPineifyQualifier`); `SignalLab()` appends ≤3 Pineify rows with `percentile=conviction`; `Heatmap()`/`NetFlow()` unchanged.
+- `/v1/signal/priority` (POST/GET) + `pushSignalPriority` (auto_trader_loop.go:832) thread the engine candidate set.
+- `pineify_test.go` (3320 tok) + `compute_test.go`: mapping, limiter, enrichment, degraded handling, Signal Lab rows, qualifier, priority, carry-forward.
+
+## B.1 VERIFIED: enriched data reaches the AI prompt (Goal 2 ✓)
+
+Full chain traced against the code — no re-testing needed:
+
+```
+Ingest() ─→ enrichWithPineify (asset.Pineify, gated by PINEIFY_MCP_TOKEN, token-bucket)
+  → SignalLab() appends ≤3 Pineify rows (Technical/Upcoming Events/Rating), percentile=pct(conviction)
+  → GET /v1/signal/lab → vergexClient.GetSignalLab → populateVergexDetailData
+  → MarketAnalysis.SignalLab → enrichVergexDataWithStrategy → ctx.VergexDataMap
+  → formatVergexData → FormatAnalysisForAI → FormatSignalLabMarkdown → AI user prompt
+```
+
+- **Confirmed correct.** The overlay lands in the AI prompt via the Signal Lab `dimensions[]` seam with **zero formatter/client.go change** (`FormatSignalLabMarkdown` untouched). Gating (token), throttling (token-bucket, ingest-worker only — never the HTTP/trading path), and mapping (`pineifyTicker`) are all correctly placed.
+- The `enrichVergexDataWithStrategy` early-return on `ctx.VergexDataMap != nil` (engine_analysis.go:147) does **not** drop Pineify: Pineify is baked into the lab response *upstream* in the signal service, so skipping a refetch only avoids duplicating an already-enriched lab fetch. Confirmed non-lossy.
+- `pushSignalPriority` (best-effort, non-blocking, 3s timeout) → `/v1/signal/priority` → `SetPriority` → `Priority()` → the priority tier of `enrichWithPineify`. Confirmed wiring.
+
+## B.2 Findings (ranked; each VERIFIED or CORRECTED)
+
+### F1 — [HIGH · data race] `Rank()` writes `asset.Score` on shared snapshot pointers without a lock
+**VERIFIED (real race) — actor framing CORRECTED.**
+- `Rank()` calls `Snapshot()` (`service.go:63`), which returns the **live map pointers** under `RLock` that is released on return, then writes `a.Score = composite` (compute.go:152) on those shared pointers.
+- **Corrected concurrency actors:** the race is between **concurrent HTTP handlers**, not the ingest worker. `handleRanking` → `Rank()` writes `a.Score` while `handleSignalLab` → `SignalLab()` reads `a.Score` (compute.go:420) — two separate requests served by the mux in their own goroutines. Two concurrent `Rank()` calls race on the same pointer too. The ingest worker's `mappableBoard`/`byScore` sorts do **not** race: `enrichWithPineify` runs on a *fresh local* `assets` map (all `Score=0`) before the swap, so it never touches the shared generation. Any of the concurrent HTTP handlers are the actual readers/writers. `go test -race` will flag it.
+- The "immutable snapshot" design intent (service.go:27) is violated by the score carry.
+- **Fix (preferred):** stop mutating assets in `Rank()`; return scores in a rank-local map and have `SignalLab()` recompute the per-symbol cohort composite on demand (read-only, O(cohort) per request, cheap). Alternatives: guard the write+reads under `s.mu`, or store `Score` in a separate `map[symbol]float64` protected by `s.mu`.
+- **Related carried-value ordering (confirmed):** because the ingest worker builds fresh assets with `Score=0`, `/v1/signal/lab` served before any `/v1/signal/ranking` call in a cycle emits no `compositeZ`/`score` scalars (they're `0`). The scalar is a carried value, not a recompute — the on-demand recompute fix removes this dependency too.
+
+### F2 — [HIGH · config] `PineifyRatePerMinute` default/clamp violate the confirmed 30/min ceiling
+**VERIFIED.**
+- `config.go:32`: `clampInt(envInt("PINEIFY_RATE_PER_MINUTE", 40), 1, 40)` — **default 40, clamp `[1,40]`**. This is above the user-confirmed 30/min max. (The struct doc comment on `config.go:23-24` claims "clamped to [1,30]" — a doc/code mismatch that should be reconciled too; the *code* clamps to 40.)
+- `pineify.go:63-67` also hard-caps at 40 and its comment claims "Pineify enforces its own rate limit of 40 calls/min (observed 429s beyond that)" — the code's believed cap (40) exceeds the confirmed real cap (30).
+- **Severity is interval-dependent, so keep it HIGH but precise:** `budget := rate` is the per-ingest call cap. At the default 3m interval that's ≤40 calls/3min ≈ 13/min — *within* 30/min. It only becomes an actual 429 risk when `SIGNAL_SERVICE_INTERVAL` is reduced (e.g. 1m → 40/min > 30) or on bursty retry cycles. The bug is that the config/default advertises 40 and the budget scales with `rate`, not with `Interval`.
+- **Fix:** clamp `[1,30]`, default 20–30, and set `budget = min(rate, 30)`; reconcile the `pineify.go:63` hard-cap and the stale doc comment.
+
+### F3 — [MEDIUM · Goal-1 gap] Symbol selection on the signal-matrix path is not met by default
+**VERIFIED.**
+- The matrix/ranking is fed **only** by `/v1/signal/ranking`; `Score`/`rank` stay pure-HL. `Rank()` affects ordering **only** through the opt-in boost qualifier (`PineifyBoostEnabled`, default false) which additionally requires `Coverage=="full"` and opposing bias (narrow, see F7). `find-ai-stock-picks`/`find-technical-setups` are intentionally unused.
+- Result: with defaults, **Pineify neither adds nor reorders matrix symbols** — Goal 1 is effectively unmet by default; only Goal 2 (AI decision data) is realized. This matches the plan §1's "Selection = Hyperliquid only" boundary, but the plan's stated goal (1) is therefore **deferred unless a conservative agree-overlay is wired into the matrix `Rank`**. Recommend explicitly documenting the deferral or adding an opt-in data-driven nudge when full-coverage Pineify *agrees* with HL bias (not just demote/reject).
+
+### F4 — [MEDIUM · staleness] No Pineify age-out; carry-forward persists enrichment forever
+**VERIFIED.**
+- `service.go:119-124` carries `prev.Pineify` forward for budget-skipped symbols with **no TTL**, and `SignalLab()` renders any snapshot with `Coverage != ""` regardless of `FetchedAt` (compute.go:406).
+- A rating/event from many cycles ago is rendered as current to a pre-entry confirmation gate.
+- **Fix:** drop or mark `Error="stale"` when `FetchedAt` older than `N×Interval` (e.g. 6×3m), mirroring the plan's stale-policy intent.
+
+### F5 — [MEDIUM · classification] `XYZCategory` `default: "stock"` mis-classifies; **DXY** missing from exclusions
+**VERIFIED.**
+- `coins.go` `XYZCategory` (verified `provider/hyperliquid/coins.go:40-55`) returns `"stock"` for any base not in its enumerated lists (the `default:` branch). So unknown/new bases and index-likes are treated as mappable US stocks.
+- `pineifymap.go` `pineifyNonMappable` excludes VIX/XLE/EWY/EWJ/EWZ/EWT/NIFTY/IBOV/GOLD/SILVER/CL/SOXL/SPCX etc., but **DXY is absent** — `handler_klines.go` classifies DXY as `index`, while `XYZCategory` falls to `stock`. Net effect: wasted/unwanted rating calls on DXY (Pineify returns none for index/ETF).
+- **Fix:** add `DXY` to `pineifyNonMappable`; prefer explicit classification (unknown → not-stock) over the catch-all; diff `XYZCategory` vs `hyperliquidXYZCategory` over the live xyz universe per plan §"Classification reconciliation".
+
+### F6 — [MEDIUM · budget] Priority tier is unbounded and starves top-K + rotation
+**VERIFIED, plus an additive note.**
+- `enrichWithPineify` fills `ordered` with **all** priority candidates first (no K cap — pineify.go:90-96), then `byScore` (capped at `len(ordered) >= 10` total), then round-robin. A large candidate set consumes the entire `budget`, collapsing the plan's "always-enrich top-K (K≈min(10,budget)) then rotate long tail".
+- **Fix:** cap the priority tier at `K = min(10, budget)`, then score-ordered, then rotate, threading the remaining budget.
+- **Additive note (not in the plan):** the score-ordered tiers are largely **inert** — `enrichWithPineify` runs on the *fresh* local `assets` map where every `a.Score` is still `0` (Rank runs on the swapped snapshot, later in the cycle). So `byScore` and `mappableBoard` sort equal `0` scores (map-iteration order, effectively a no-op), leaving the engine-priority tier as the only real ordering. Low severity (priority tier covers candidates), but worth a comment + a unit test if the "strongest first" tier is intended to matter.
+
+### F7 — [LOW · threshold coherence] Boost qualifier conviction is not data-derived and rarely fires
+**VERIFIED (with nuance).**
+- `computeBias` sets a fixed conviction of `0.8` (trend-derived) or `0.7` (rating-derived); `PineifyMinConviction` default `0.7`. The qualifier tests `Conviction >= minConv` — since the value equals (0.7) or exceeds (0.8) the threshold, the qualifier **can** fire on a full-coverage opposing-bias snapshot, but only at the exact boundary value (0.7) for rating-driven bias. `parsePineifyRating` hardcodes `>=7 buy`, `<=4 sell` (e.g. NBIS rating 4 → "sell" regardless of stance).
+- Coherent as a conservative default, but effectively near-decorative while boost is off and the coverage/full + opposing-bias + threshold conjunction is narrow. Note the conviction is a token weight, not a real confidence metric.
+
+### F8 — [LOW · scope cut] No research or flow tier, no wall-clock cap
+**VERIFIED.**
+- `enrichSymbol` calls only TA + events (+ rating for non-crypto). `get-stock-research-snapshot` (plan tier 2) is **not called**, though it worked live for NVDA/MU/SNDK — a filled §8.1 quality/crowding channel is unused. Flow tools are correctly omitted (`track-smart-money` persistently unavailable).
+- `enrichWithPineify` is **synchronous inside `Ingest()`** with no wall-clock bound (plan §7 required one). Sequential calls (budget up to 40) at slow Pineify latency can push ingest past the cadence → stale snapshot for HTTP products.
+- **Fix:** add a total enrichment deadline (e.g. `min(budget, Interval/2)` worth of time); optionally add a research tier for rating-validated symbols.
+
+### F9 — [LOW · over-exclusion] TSM/BABA excluded despite being US-listed ADRs Pineify rates
+**VERIFIED as a design judgment.**
+- `pineifyNonMappable` drops TSM and BABA (both US-listed ADRs Pineify resolves; the plan's own live tests returned SKHY via research). Conservative but loses two valid enrichment targets — confirm it's intended (they're flagged "ADR — leave as non-mappable fallback"). Optional to keep as-is; not a bug.
+
+## B.3 Gap-vs-goals summary
+| Goal | Status | Evidence |
+|---|---|---|
+| (2) Enrich AI decision data (TA/events/rating) → fill §8.2 / §8.1 | ✅ **Met** | verified chain B.1; Signal Lab rows with `percentile=conviction` |
+| (1) Help select symbols on signal-matrix path | ⚠ **Not met by default** | Pineify never adds/reorders; only off-by-default, full-coverage-reachable (F7) boost demotes/rejects (F3) |
+| §8.2 lab technicals | ✅ filled for mappable US stock; ❌ non-mapped symbols keep 3 proxy rows | B.1 / A-8.7.2 |
+| §8.1 ranking crowding (R3) | ⚠ partial, not wired into `Score` | A-8.7.1 |
+| §8.3 heatmap (R1) | ❌ **not reduced** (Mode B free proxy only; Mode A = paid claw402) | A-8.7.3 |
+
+## B.4 Remaining refinements (priority order)
+1. **F1** — remove the `asset.Score` write (recompute in `SignalLab` on demand) to kill the race + the carried-value ordering dependency.
+2. **F2** — clamp rate `[1,30]`, default 20–30; `budget = min(rate, 30)`; reconcile the `pineify.go` hard-cap and the `config.go` doc comment.
+3. **F5** — add `DXY`; harden against the `XYZCategory` `default:"stock"` catch-all (unknown → not-stock).
+4. **F4** — age-out stale Pineify via `FetchedAt` (drop or mark `"stale"` beyond `N×Interval`).
+5. **F6** — cap the priority tier at K; preserve hybrid rotation; add a unit test (and note that the score-ordered tiers are inert pre-Rank).
+6. **F8** — wall-clock enrichment cap; optional research tier.
+7. **F3** — decide and document whether Goal-1 selection is deferred or gets a conservative agree-overlay in the matrix.
+
+**Regression safety:** all findings are additive/config-level; none break byte-parity when `PINEIFY_MCP_TOKEN` is unset (pure-HL output preserved).

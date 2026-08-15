@@ -423,6 +423,99 @@ The dashboard's Signal Matrix is populated from **`/api/vergex/signal-ranking?ma
 
 ---
 
+## 8.7 Field-by-Field Parity (§8 expansion)
+
+> **Status:** appended after verifying each claim against the code (compute.go, service.go, pineify*.go, provider/vergex/client.go, kernel/engine*.go, auto_trader_force.go). Expands — does not rewrite — the §8.1–8.6 verdicts. Paid-side ground truth = captured claw402 response field lists (signal-ranking `raw.*`, heatmap `data.*`/`cost{}`/`liquidation{}`/`meta.*`, flow-markets `inflow.*`). No code changed by this note.
+
+Consumption chain (verified once, reused across all four products):
+
+```
+vergexClient.{GetSignalRanking|GetSignalLab|GetCostLiquidationHeatmap|GetFlowMarkets}
+  → MarketAnalysis / SignalRankingData
+  → enrichVergexDataWithStrategy → ctx.VergexDataMap
+  → formatVergexData (engine_prompt.go:1050)
+  → vergex.FormatAnalysisForAI (client.go:415)
+  → FormatSignalLabMarkdown / FormatHeatmapMarkdown → AI user prompt
+```
+Selection chain: `Rank()` → `/v1/signal/ranking` → `ParseSignalRanking`/`parseRankItem` → `getVergexSignalCoins` → `vergexRankingCache` → `DirectionalCandidates` (`Score`,`Bias`,`Rank`); forced coverage additionally applies `|score| ≥ 0.4` (`forcedCoverageMinScore`, auto_trader_force.go:17).
+
+### 8.7.0 Field trace legend
+- **Present** = the free product emits a field in the same wire slot the parser/formatter reads.
+- **Consumed** = the field feeds a prompt line, a selection branch, or an enforced gate. Unconsumed fields cannot cause prompt regression.
+- **Fidelity** = whether the free *value* reproduces the paid *semantic* (not just the shape).
+
+### 8.7.1 Signal Ranking (pair with §8.1)
+
+**Schema parity.** `SignalRankingData{Raw, Items[]SignalRankItem{Rank,Symbol,MarketType,Bias,Confidence,Score,Category,Raw}}` — free `Rank()` (compute.go:48) emits the full item shape. `Raw` is left `nil` in free output (the paid `raw.*` is never carried; see below).
+
+| Paid field | Free source | Present | Consumed | Fidelity |
+|---|---|---|---|---|
+| `rank` | 1-based index by `\|composite\|` desc | ✅ | ✅ (`DirectionalCandidates` sort) | real ordering ✅ |
+| `symbol` | `querySymbol` (strips `xyz:`/`USDT`) | ✅ | ✅ (universe membership) | ✅ |
+| `marketType` | `hip3_perp` / `core_perp` | ✅ | ✅ (client-side filter, detail routing) | ✅ |
+| `bias` | `biasToken` (exact `bullish/bearish/neutral`) | ✅ | ✅ (bull/bear interleave `getVergexSignalCoins`; `DirectionalCandidates` direction) | **tokens exact; semantic = momentum, not crowding** |
+| `score` / `compositeZ` | per-cohort composite `0.45·z_price24h + 0.35·z_funding + 0.20·z_oiDelta` | ✅ | ✅ (`\|score\| ≥ 0.4` gate in `ensureLongShortCoverage` + sign for direction) | 🔴 no crowding/leverage/cascade factor → **P2** |
+| `confidence` | `\|composite\|/maxAbsComposite` (relative max) | ✅ | ✅ (prompt line) | ⚠ semantics changed (absolute→relative) → **P2** |
+| `category` | `hyperliquid.XYZCategory(base)` or `"crypto"` | ✅ | ✅ (category filter) | ⚠ `XYZCategory` `default:` returns `"stock"` for unlisted bases (see N2) |
+| `raw.cgoPct`, `raw.lfaPct`, `raw.cascadeVuln`, `market{isActive,marketId}`, `meta{asOfBlock,appliedThroughEventId,generationId}` | — (nil `Raw`) | ❌ | ❌ (never parsed by `parseRankItem`/renderers) | zero prompt regression ✅ |
+
+**Verdict: SUFFICIENT (P2 crowding).** The fields the AI and the trading gate actually branch on (`score` sign/magnitude, `bias` token, `rank`, `category`) are real and correctly typed. The only substantive loss is the crowding/fragility factor folded into paid `compositeZ`; a fragile, OI-driven move gets an undiscounted clean bull/bear tag. **Pineify fill-gap (reconciled):** `get-ai-stock-rating`/`get-stock-research-snapshot` overlays would add a quality/fragility dimension, but **is not wired into `Score`/`Rank`** on this branch — it lands in the Signal Lab Rating row and the (off-by-default) boost qualifier only. §8.1 R3 is therefore **not closed by default**.
+
+### 8.7.2 Signal Lab (pair with §8.1 §8.2)
+
+**Schema parity.** Free `SignalLab()` (compute.go:354) emits scalar `{symbol, marketType, bias, confidence, compositeZ, score}` + `dimensions[].{family,label,direction,strength,percentile,detail}` (cap 8). Consumed fields (via `FormatSignalLabMarkdown`, client.go:450): `dimensions[].family/label/direction/strength/percentile/detail`; scalars `compositeZ`/`score` via `writeScalarSummary`.
+
+| §8.2 gap | Paid | Free (no Pineify) | Free (+Pineify, mappable US stock) |
+|---|---|---|---|
+| trend/momentum/technicals | real RSI/EMA/ADX/levels | POC + 24h Momentum (**POC-direction ≈ momentum**; funding already in ranking) | + **Pineify Technical** row (`Trend`/`RSI`/`ADX`/`tech_score`, `detail` = concat) |
+| catalysts/events | real | — | + **Pineify Upcoming Events** row (Type/Name/Date, ≤3) |
+| analyst rating/quality | real | — | + **Pineify Rating** row (Action/Score) |
+| `percentile` | real | renders `-` | filled (`pct(conviction)`) **on Pineify rows only**; proxy rows still `-` |
+| `compositeZ`/`score` scalar | real z | carried from `asset.Score` (set by `Rank()`, compute.go:153) | same — with the ordering/race caveat in N1 |
+
+**Verdict: NOT sufficient alone (P1); PARTIALLY filled by Pineify.** With `PINEIFY_MCP_TOKEN` set, a mappable US-listed stock gets real technicals + catalysts + rating in `dimensions[]`, restoring the "Signal Lab = core pre-entry confirmation" rule (Decision Data Priority #2) for that subset. **Non-mapped symbols (crypto, index, commodity, forex, pre-IPO) keep the 3 proxy rows → the §8.2 confirmation-gate collapse persists for them.** The `compositeZ`/`score` scalar is present but depends on `Rank()` having run this cycle (carried value, not recompute — see N1).
+
+### 8.7.3 Cost / Liquidation Heatmap (pair with §8.3) — dual-mode, severity differs by mode
+
+Routing (client.go:152 `GetCostLiquidationHeatmap`): **PAID claw402 (x402) when `CLAW402_WALLET_KEY` is set (`privateKey != nil`); otherwise → free synthetic `Heatmap()` (`/v1/signal/heatmap`).** This is the critical disambiguation the original §8.3 under-stated:
+
+- **Mode A — wallet key present (default production today):** the AI consumes **real paid** clustered data. No §8.3 P0 in this mode, but the premise of self-hosting (drop claw402) is not met, and the paid dependency + x402 cost/persistence remain.
+- **Mode B — key removed (self-hosted premise):** free synthetic heatmap. **§8.3 P0 applies here.**
+
+**Schema parity (Mode B).** Free emits `data{symbol, marketType, binStep, markPrice, bins[].{bucketStartPrice,bucketEndPrice,px,longCost,shortCost,longLiq,shortLiq}, costAddrs, liqAddrs, market{symbol}}` (121-bin ladder, `heatmapHalfRange=60`).
+
+| Paid field | Free source | Present | Consumed | Fidelity |
+|---|---|---|---|---|
+| `data.symbol/marketType/binStep/markPrice` | snapshot / volatility proxy | ✅ | ✅ (header + scalars) | ✅ |
+| `data.bins[].{bucketStartPrice,bucketEndPrice,px,longCost,shortCost}` | 121-bin ladder, pool = `OI×mark` (~50/50 ± funding tilt) | ✅ | ✅ | ⚠ `longCost/shortCost` = synthetic OI·mark split, not trader cost basis |
+| `data.bins[].longLiq, shortLiq` | exp-taper pegged **0.33× mark cost** | ✅ | ✅ **stop/target placement** | 🔴 **fabricated liquidation levels** → **P0** |
+| `cost{state,totalPositions,includedPositions}`, `liquidation{state,reason}`, `meta{asOfBlock,…}` | — (shape absent) | ❌ | ❌ (never parsed/rendered) | zero prompt regression ✅ |
+
+**Residual risk is concrete, not categorical:** `vergexHoldRules()` (engine_prompt.go) instructs the AI to place targets at "meaningful heatmap resistance/liquidation zones (around +8%)" and stops at "heatmap resistance/liquidation zones (around -3%)". In Mode B those anchors sit on deterministic synthetic levels. The §3.7 disclosure ("stress indicators, not absolute liquidation levels") partially counteracts but does not remove the operational instruction.
+
+**Pineify fill-gap (reconciled): NONE.** Pineify options-flow is itself a proxy and is **not wired anywhere** — the heatmap payload has no `dimensions[]` to host an "Options Flow" row, and `MarketAnalysis` has no generic extras field. **§8.3 R1 is not reduced by this plan** (matches the plan's own honesty). Only Mode A (paid claw402) or prompt repositioning retire it.
+
+### 8.7.4 Net-flow (pair with §8.4)
+
+**Schema parity.** Free `NetFlow()` (compute.go:500) emits `nofxos.NetFlowRankingData`/`NetFlowPosition{Rank,Symbol,Amount,Price}`; `FormatNetFlowRankingForAI` drives the prompt tables. Inst = `funding × OI × mark` (smart-money proxy); retail = `OI-delta × mark`.
+
+| Paid field | Free source | Present | Consumed | Fidelity |
+|---|---|---|---|---|
+| `inflow.*` (per-symbol amount/price) | proxies above | ✅ (shape) | ❌ | ⚠ magnitude proxy (~34K vs paid real taker-flow) |
+| institution/personal split | funding/OI-derived | ✅ (shape) | ❌ | ⚠ not a true ledger split |
+
+**Verdict: N/A in phase-1.** `usesHyperliquidNativeUniverse()` (engine.go:233; true for `vergex_signal`) gates `FetchNetFlowRankingData`/`FetchOIRankingData`/`FetchPriceRankingData` to nil — the prompt never renders netflow. Pineify flow tools (`get-market-tide`/`get-sector-flow-snapshot`) are available for US and **not wired** on this branch — correctly deferred, lower priority.
+
+### 8.7.5 Cross-cutting field-fidelity notes (new, additive to §8.5)
+
+| # | Note | Severity |
+|---|---|---|
+| N1 | **`compositeZ`/`score` scalar is a carried value, not a recompute.** `Rank()` writes `a.Score = composite` (compute.go:153) on the shared snapshot asset; `SignalLab()` reads it (`if a.Score != 0`, compute.go:438). A consumer that fetches `/v1/signal/lab` in a cycle where `Rank()` has not run gets `0`/stale. Because `Snapshot()` returns live pointers under `RLock` and `Rank()` writes after release, this also introduces a **data race** on `asset.Score` against concurrent HTTP handlers and the ingest worker. | **P1** |
+| N2 | **`category`/mapping trust `XYZCategory` whose `default:` returns `"stock"`** (coins.go:49). This makes unknown/new xyz bases mappable US stocks at the Pineify layer and can mis-tag `category`. Only the `pineifyNonMappable` exclusions mitigate; DXY is missing from that set (handler_klines.go:416 classifies it `index`), so DXY would draw a wasted rating call. | **P1** |
+| N3 | **§8.5 R5 (liqBand→binStep) remains a contract gap** — `handleHeatmap` (http.go:69) reads only `symbol`, ignoring `liqBand`. Unchanged from §8; out of Pineify scope. | P1 (unchanged) |
+
+---
+
 ## References
 
 - Hyperliquid info API: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals
