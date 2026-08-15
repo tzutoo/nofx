@@ -3,6 +3,7 @@ package signal
 import (
 	"encoding/json"
 	"math"
+	"strconv"
 	"testing"
 
 	"nofx/provider/vergex"
@@ -563,5 +564,48 @@ func TestRankMarshalsAsSignalRankingContract(t *testing.T) {
 	}
 	if parsed.Items[0].Bias == "" || parsed.Items[0].Symbol == "" {
 		t.Errorf("round-trip item lost bias/symbol: %+v", parsed.Items[0])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// F1: Rank must not mutate shared snapshot pointers; SignalLab recomputes the
+// per-symbol cohort composite on demand (matches Rank's value).
+// ---------------------------------------------------------------------------
+
+func TestRankDoesNotMutateSharedScore_AndSignalLabRecomputes(t *testing.T) {
+	s := testService(buildRankFixture())
+	board := s.Rank(0)
+	item := itemBySymbol(board.Items, "AAA")
+	if item == nil {
+		t.Fatal("AAA missing from ranking")
+	}
+	// F1: Rank must NOT write the composite onto the shared asset pointer.
+	if got := s.assets["AAA"].Score; got != 0 {
+		t.Errorf("Rank mutated asset.Score = %v, want 0 (must not write shared pointers)", got)
+	}
+
+	body, err := s.SignalLab("AAA")
+	if err != nil {
+		t.Fatalf("SignalLab error: %v", err)
+	}
+	var out struct {
+		CompositeZ string `json:"compositeZ"`
+		Score      string `json:"score"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("decode SignalLab: %v", err)
+	}
+	if out.CompositeZ == "" {
+		t.Fatalf("compositeZ not emitted by SignalLab recompute")
+	}
+	got, err := strconv.ParseFloat(out.CompositeZ, 64)
+	if err != nil {
+		t.Fatalf("parse compositeZ %q: %v", out.CompositeZ, err)
+	}
+	if !approx(got, item.Score, 1e-6) {
+		t.Errorf("SignalLab recomputed compositeZ = %v, want %v (matches Rank)", got, item.Score)
+	}
+	if out.Score != out.CompositeZ {
+		t.Errorf("score scalar = %q, want compositeZ %q", out.Score, out.CompositeZ)
 	}
 }

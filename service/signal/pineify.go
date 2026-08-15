@@ -107,15 +107,19 @@ func (s *Service) enrichWithPineify(ctx context.Context, assets map[string]*asse
 		return
 	}
 	client := newPineifyClient(s.cfg, s.httpClient, s.logger())
-	// Pineify enforces its own rate limit of 40 calls/min (observed 429s
-	// beyond that). We default to 40 and never exceed it, and cap the per-ingest
-	// budget so a long-tail round-robin cannot blow past the limit.
+	// Pineify's confirmed hard ceiling is 30 calls/min; we never exceed it and
+	// keep headroom for bursts/retries. The per-ingest budget equals the clamped
+	// rate (each Pineify call costs one), so a long-tail round-robin cannot blow
+	// past the ceiling.
 	rate := s.cfg.PineifyRatePerMinute
-	if rate <= 0 || rate > 40 {
-		rate = 40
+	if rate <= 0 {
+		rate = 1
+	}
+	if rate > 30 {
+		rate = 30
 	}
 	limiter := newTokenBucket(rate)
-	budget := rate // per-ingest call cap (each Pineify call costs one)
+	budget := min(rate, 30) // hard cap at the confirmed 30/min ceiling
 
 	if err := client.initialize(ctx); err != nil {
 		s.logger().Warnf("⚠️  Pineify initialize failed, skipping enrichment: %v", err)

@@ -25,7 +25,7 @@ type asset struct {
 	OI          float64 // current open interest (base-coin units)
 	OIPrev      float64 // previous poll open interest
 	Oracle      float64 // oracle price
-	Score       float64 // last composite z-score (populated by Rank; 0 until ranked)
+	Score       float64 // composite z-score vestige; NOT written by Rank (F1: mutating the shared snapshot pointer would race HTTP handlers). Only referenced by the inert pre-Rank enrichment board sort.
 	MaxLeverage int
 	SzDecimals  int
 	Pineify     *PineifySnapshot // optional Pineify enrichment overlay (nil unless token set)
@@ -142,25 +142,54 @@ func (s *Service) Ingest(ctx context.Context) error {
 	}
 
 	s.mu.Lock()
-	// Carry OI-delta forward for symbols present in both snapshots, and persist
-	// each symbol's last-known Pineify snapshot so a symbol keeps its enrichment
-	// (TA/events/rating) even in cycles where the budget-limited enrichment did
-	// not refresh it. Freshly-enriched snapshots (this cycle) overwrite the
-	// previous one; stale-but-valid data is retained rather than dropped.
-	for sym, a := range assets {
-		if prev, ok := s.assets[sym]; ok {
-			a.OIPrev = prev.OI
-			if a.Pineify == nil {
-				a.Pineify = prev.Pineify
-			}
-		}
-	}
+	// Carry OI-delta and last-known Pineify enrichment forward (see
+	// carryForward). Freshly-enriched snapshots (this cycle) win; carried
+	// snapshots older than the staleness window are dropped so stale ratings
+	// are never rendered as current to a pre-entry gate.
+	s.carryForward(s.assets, assets)
 	s.assets = assets
 	s.order = order
 	s.lastIngest = time.Now()
 	s.ingestErr = nil
 	s.mu.Unlock()
 	return nil
+}
+
+// pineifyStaleAfter is the age after which a carried Pineify overlay is
+// considered stale (a reasonable multiple of the ingest interval). Beyond it a
+// rating/event is too old to be rendered as current to a pre-entry gate.
+func (s *Service) pineifyStaleAfter() time.Duration {
+	iv := s.cfg.Interval
+	if iv <= 0 {
+		iv = 3 * time.Minute
+	}
+	return 6 * iv
+}
+
+// carryForward merges per-symbol state from the previous snapshot into the
+// freshly-ingested assets: OI-delta (previous poll OI) and, for symbols the
+// budget-limited enrichment did not refresh this cycle, the last-known Pineify
+// overlay. Overlays older than the staleness window are carried as stale
+// (Coverage cleared, Error="stale") so SignalLab never renders them as current.
+func (s *Service) carryForward(prev, next map[string]*asset) {
+	for sym, a := range next {
+		p, ok := prev[sym]
+		if !ok {
+			continue
+		}
+		a.OIPrev = p.OI
+		if a.Pineify != nil || p.Pineify == nil {
+			continue
+		}
+		if time.Since(p.Pineify.FetchedAt) > s.pineifyStaleAfter() {
+			stale := *p.Pineify
+			stale.Coverage = ""
+			stale.Error = "stale"
+			a.Pineify = &stale
+			continue
+		}
+		a.Pineify = p.Pineify
+	}
 }
 
 // ingestDex fetches one Hyperliquid dex and adds assets to the map, tagging

@@ -130,14 +130,16 @@ func (s *Service) Rank(limit int) *vergex.SignalRankingData {
 			Score:      composite,
 			Category:   a.Category,
 		}
-		// Carry the per-symbol z onto the asset so SignalLab can emit the
-		// compositeZ/score scalars without recomputing the cohort.
-		a.Score = composite
+		// NOTE (F1): we deliberately do NOT write composite onto the shared
+		// asset pointer (a.Score). Snapshot() returns live pointers under a read
+		// lock that is released on return; mutating them here would race
+		// concurrent HTTP handlers. SignalLab recomputes the cohort composite
+		// on demand instead.
 
 		// Opt-in Pineify qualifier: when enabled, a mappable item with full
 		// coverage whose Pineify bias opposes the HL bias with sufficient
 		// conviction is demoted (or excluded with hard-reject).
-		if boost && qualifiesForPineifyQualifier(a, minConv) {
+		if boost && qualifiesForPineifyQualifier(a, composite, minConv) {
 			if hardReject {
 				continue
 			}
@@ -154,18 +156,20 @@ func (s *Service) Rank(limit int) *vergex.SignalRankingData {
 }
 
 // qualifiesForPineifyQualifier reports whether a mappable asset's full-coverage
-// Pineify bias opposes the HL bias strongly enough to demote/reject it.
-func qualifiesForPineifyQualifier(a *asset, minConv float64) bool {
+// Pineify bias opposes the HL bias strongly enough to demote/reject it. The HL
+// composite is passed in (rather than read from a.Score) so this stays a pure,
+// read-only decision with no shared-pointer mutation.
+func qualifiesForPineifyQualifier(a *asset, composite float64, minConv float64) bool {
 	if a == nil || a.Pineify == nil {
 		return false
 	}
-	if a.Pineify.Coverage != "full" || a.Pineify.Bias == "" || a.Score == 0 {
+	if a.Pineify.Coverage != "full" || a.Pineify.Bias == "" || composite == 0 {
 		return false
 	}
 	if a.Pineify.Conviction < minConv {
 		return false
 	}
-	hlBias := biasToken(a.Score)
+	hlBias := biasToken(composite)
 	pfBias := a.Pineify.Bias
 	return (hlBias == "bullish" && pfBias == "bearish") ||
 		(hlBias == "bearish" && pfBias == "bullish")
@@ -217,6 +221,42 @@ func meanStd(vals []float64) factorStats {
 	}
 	std := math.Sqrt(sq / float64(len(vals)))
 	return factorStats{mean: mean, std: std}
+}
+
+// cohortComposite recomputes a per-symbol cohort composite z-score read-only
+// against the given cross-section's cohort mean/std. Used by SignalLab to emit
+// the compositeZ/score scalars on demand (O(cohort) per request) without
+// mutating any shared snapshot pointers (F1).
+func (s *Service) cohortComposite(assets map[string]*asset, a *asset) float64 {
+	var f [3][]float64 // price24h, funding, oidelta
+	for _, other := range assets {
+		if other.MarketType != a.MarketType {
+			continue
+		}
+		if d := priceDelta(other); d != nil {
+			f[0] = append(f[0], *d)
+		}
+		f[1] = append(f[1], other.Funding)
+		if other.OIPrev > 0 {
+			f[2] = append(f[2], other.OIDelta())
+		}
+	}
+	var stats [3]factorStats
+	for i := 0; i < 3; i++ {
+		stats[i] = meanStd(f[i])
+	}
+	var d *float64
+	if v := priceDelta(a); v != nil {
+		d = v
+	}
+	z0 := zscore(d, stats[0])
+	z1 := zscore(&a.Funding, stats[1])
+	z2 := 0.0
+	if a.OIPrev > 0 {
+		v := a.OIDelta()
+		z2 = zscore(&v, stats[2])
+	}
+	return rankingWeights[0]*z0 + rankingWeights[1]*z1 + rankingWeights[2]*z2
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -400,6 +440,7 @@ func (s *Service) SignalLab(symbol string) (json.RawMessage, error) {
 	if !ok {
 		return nil, errMarketNotFound
 	}
+	assets, _, _, _ := s.Snapshot()
 	dimensions := []map[string]interface{}{
 		{
 			"family":    "Market Structure",
@@ -464,10 +505,11 @@ func (s *Service) SignalLab(symbol string) (json.RawMessage, error) {
 		"confidence": confidenceWord(a.Mark, a.PrevDay),
 		"dimensions": dimensions,
 	}
-	// Emit compositeZ/score scalars from the carried per-symbol z when ranked.
-	if a.Score != 0 {
-		payload["compositeZ"] = trimFloat8(a.Score)
-		payload["score"] = trimFloat8(a.Score)
+	// Emit compositeZ/score scalars by recomputing the per-symbol cohort
+	// composite on demand (read-only; no reliance on a carried a.Score value).
+	if composite := s.cohortComposite(assets, a); composite != 0 {
+		payload["compositeZ"] = trimFloat8(composite)
+		payload["score"] = trimFloat8(composite)
 	}
 	return json.Marshal(payload)
 }

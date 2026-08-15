@@ -283,7 +283,6 @@ func TestRankPineifyQualifierDefaultOff(t *testing.T) {
 	s.cfg = cfg
 	// BBB has a pineify overlay opposing (HL bearish, pineify bullish).
 	s.mu.Lock()
-	s.assets["BBB"].Score = -2.0
 	s.assets["BBB"].Pineify = &PineifySnapshot{Coverage: "full", Bias: "bullish", Conviction: 0.9}
 	s.mu.Unlock()
 
@@ -300,8 +299,9 @@ func TestRankPineifyQualifierHardReject(t *testing.T) {
 		{Symbol: "BBB", MarketType: "core_perp", Category: "crypto", Mark: 50, PrevDay: 60, Funding: -0.001, OI: 500, OIPrev: 450},
 	})
 	s.cfg = cfg
+	// BBB's HL composite is bearish (Mark<PrevDay) with a pineify overlay
+	// opposing (pineify bullish), so with boost+hardReject it is excluded.
 	s.mu.Lock()
-	s.assets["BBB"].Score = -2.0
 	s.assets["BBB"].Pineify = &PineifySnapshot{Coverage: "full", Bias: "bullish", Conviction: 0.9}
 	s.mu.Unlock()
 
@@ -326,28 +326,95 @@ func newTestHTTPServer(h http.HandlerFunc) *httptest.Server {
 
 func TestPineifySnapshotPersistence(t *testing.T) {
 	s := testService([]*asset{{Symbol: "xyz:NVDA", MarketType: "hip3_perp", Category: "stock", Mark: 100, PrevDay: 95}})
-	// Simulate a prior snapshot with a Pineify overlay.
+	// Simulate a prior snapshot with a Pineify overlay fetched recently.
 	s.mu.Lock()
-	s.assets["xyz:NVDA"].Pineify = &PineifySnapshot{Coverage: "full", Bias: "bullish", Conviction: 0.8}
+	s.assets["xyz:NVDA"].Pineify = &PineifySnapshot{Coverage: "full", Bias: "bullish", Conviction: 0.8, FetchedAt: time.Now().Add(-time.Minute)}
 	s.mu.Unlock()
 
 	// New ingest with a fresh asset (no Pineify yet) for the same symbol.
 	assets := map[string]*asset{"xyz:NVDA": {Symbol: "xyz:NVDA", MarketType: "hip3_perp", Category: "stock", Mark: 101, PrevDay: 95}}
 	s.mu.Lock()
-	prev := s.assets["xyz:NVDA"]
+	s.carryForward(s.assets, assets)
 	s.assets = assets
 	s.mu.Unlock()
 
 	// Carry-forward should restore the previous Pineify snapshot onto the new asset.
-	if prev.Pineify == nil {
-		t.Fatal("previous snapshot should have Pineify")
-	}
-	// Replicate the ingest carry-forward logic.
-	if assets["xyz:NVDA"].Pineify == nil {
-		assets["xyz:NVDA"].Pineify = prev.Pineify
-	}
 	if assets["xyz:NVDA"].Pineify == nil || assets["xyz:NVDA"].Pineify.Coverage != "full" {
 		t.Fatalf("Pineify snapshot not persisted across ingest: %+v", assets["xyz:NVDA"].Pineify)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// F4: stale carried Pineify snapshots are age-out so they aren't rendered
+// ---------------------------------------------------------------------------
+
+func TestPineifyStaleAgeOut(t *testing.T) {
+	s := testService([]*asset{{Symbol: "xyz:NVDA", MarketType: "hip3_perp", Category: "stock", Mark: 100, PrevDay: 95}})
+	s.cfg.Interval = 3 * time.Minute // 6×3m = 18m staleness window
+	// Overlay fetched well beyond the window -> must be aged out.
+	s.mu.Lock()
+	s.assets["xyz:NVDA"].Pineify = &PineifySnapshot{Coverage: "full", Bias: "bullish", Conviction: 0.8, FetchedAt: time.Now().Add(-40 * time.Minute)}
+	s.mu.Unlock()
+
+	assets := map[string]*asset{"xyz:NVDA": {Symbol: "xyz:NVDA", MarketType: "hip3_perp", Category: "stock", Mark: 101, PrevDay: 95}}
+	s.mu.Lock()
+	s.carryForward(s.assets, assets)
+	s.mu.Unlock()
+
+	p := assets["xyz:NVDA"].Pineify
+	if p == nil {
+		t.Fatal("expected carried snapshot to be marked stale (not nil)")
+	}
+	if p.Coverage != "" {
+		t.Errorf("stale snapshot Coverage = %q, want cleared so it's not rendered", p.Coverage)
+	}
+	if p.Error != "stale" {
+		t.Errorf("stale snapshot Error = %q, want \"stale\"", p.Error)
+	}
+}
+
+func TestPineifyWithinWindowCarriedFresh(t *testing.T) {
+	s := testService([]*asset{{Symbol: "xyz:NVDA", MarketType: "hip3_perp", Category: "stock", Mark: 100, PrevDay: 95}})
+	s.cfg.Interval = 3 * time.Minute
+	// Overlay fetched 2 minutes ago -> within the 18m window -> carried intact.
+	s.mu.Lock()
+	s.assets["xyz:NVDA"].Pineify = &PineifySnapshot{Coverage: "full", Bias: "bullish", Conviction: 0.8, FetchedAt: time.Now().Add(-2 * time.Minute)}
+	s.mu.Unlock()
+
+	assets := map[string]*asset{"xyz:NVDA": {Symbol: "xyz:NVDA", MarketType: "hip3_perp", Category: "stock", Mark: 101, PrevDay: 95}}
+	s.mu.Lock()
+	s.carryForward(s.assets, assets)
+	s.mu.Unlock()
+
+	if assets["xyz:NVDA"].Pineify == nil || assets["xyz:NVDA"].Pineify.Coverage != "full" {
+		t.Fatalf("within-window snapshot should be carried intact: %+v", assets["xyz:NVDA"].Pineify)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// F2: Pineify rate is clamped to the confirmed 30/min ceiling
+// ---------------------------------------------------------------------------
+
+func TestPineifyRateClampedTo30(t *testing.T) {
+	// Env 40 (above the confirmed ceiling) must clamp to 30.
+	t.Setenv("PINEIFY_RATE_PER_MINUTE", "40")
+	if cfg := LoadConfig(); cfg.PineifyRatePerMinute != 30 {
+		t.Errorf("rate with env 40 = %d, want 30 (clamped to confirmed ceiling)", cfg.PineifyRatePerMinute)
+	}
+	// Env 1 (below floor) must clamp to 1.
+	t.Setenv("PINEIFY_RATE_PER_MINUTE", "1")
+	if cfg := LoadConfig(); cfg.PineifyRatePerMinute != 1 {
+		t.Errorf("rate with env 1 = %d, want 1 (clamped to floor)", cfg.PineifyRatePerMinute)
+	}
+	// Env 25 stays.
+	t.Setenv("PINEIFY_RATE_PER_MINUTE", "25")
+	if cfg := LoadConfig(); cfg.PineifyRatePerMinute != 25 {
+		t.Errorf("rate with env 25 = %d, want 25", cfg.PineifyRatePerMinute)
+	}
+	// Unset -> default 20 (within [1,30]).
+	t.Setenv("PINEIFY_RATE_PER_MINUTE", "")
+	if cfg := LoadConfig(); cfg.PineifyRatePerMinute != 20 {
+		t.Errorf("default rate = %d, want 20", cfg.PineifyRatePerMinute)
 	}
 }
 
