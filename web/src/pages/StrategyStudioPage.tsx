@@ -885,6 +885,11 @@ function CostLiquidationHeatmap({
   const includedCost = data.cost?.includedPositions || data.costAddrs || 0
   const includedLiq = data.liqAddrs || 0
 
+  // With the self-hosted proxy there is no claw402 `cost.includedPositions`
+  // real count, so `costAddrs`/`liqAddrs` are fabricated estimates derived from
+  // OI/funding. Label them as approximate rather than a real trader-book count.
+  const proxyEst = !data.cost?.includedPositions
+
   return (
     <section className="overflow-hidden rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter shadow-lg">
       <div className="border-b border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter px-5 py-4">
@@ -897,8 +902,14 @@ function CostLiquidationHeatmap({
               </span>
             </div>
             <div className="mt-3 flex flex-wrap gap-3 text-sm text-nofx-text-muted">
-              <span>{includedCost.toLocaleString()} cost positions</span>
-              <span>{includedLiq.toLocaleString()} liquidation prices</span>
+              <span>
+                {includedCost.toLocaleString()}{proxyEst ? ' ≈' : ''} cost positions
+                {proxyEst ? <span className="font-normal text-nofx-text-muted">(proxy est.)</span> : null}
+              </span>
+              <span>
+                {includedLiq.toLocaleString()}{proxyEst ? ' ≈' : ''} liquidation prices
+                {proxyEst ? <span className="font-normal text-nofx-text-muted">(proxy est.)</span> : null}
+              </span>
               <span>
                 mark{' '}
                 <span className="font-semibold text-nofx-text">

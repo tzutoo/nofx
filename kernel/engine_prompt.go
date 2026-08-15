@@ -207,7 +207,7 @@ func (e *StrategyEngine) buildVergexSystemPrompt(accountEquity float64, variant 
 		sb.WriteString("# Decision Data Priority\n\n")
 		sb.WriteString("1. Claw402.ai Signal Ranking: candidate pool, rank, direction and category.\n")
 		sb.WriteString("2. Claw402.ai Signal Lab: trend, momentum, event/model confirmation; this is the core pre-entry confirmation source.\n")
-		sb.WriteString("3. Claw402.ai Cost/Liquidation Heatmap: crowded liquidation/cost zones, stop placement and target zones.\n")
+		sb.WriteString("3. Claw402.ai Cost/Liquidation Heatmap: crowded liquidation/cost zones for relative stress/crowding context (stops/targets come from ATR and candle structure).\n")
 		sb.WriteString("4. Raw OHLCV candles: entry timing, trend structure, volatility and risk/reward validation.\n\n")
 		sb.WriteString("# Trading Rules\n\n")
 		sb.WriteString("- Manage existing positions before opening new ones.\n")
@@ -222,7 +222,7 @@ func (e *StrategyEngine) buildVergexSystemPrompt(accountEquity float64, variant 
 		sb.WriteString("# Decision Data Priority\n\n")
 		sb.WriteString("1. Claw402.ai Signal Ranking: candidate pool, rank, direction and category.\n")
 		sb.WriteString("2. Claw402.ai Signal Lab: trend, momentum, event/model confirmation; this is the core pre-entry confirmation source.\n")
-		sb.WriteString("3. Claw402.ai Cost/Liquidation Heatmap: crowded liquidation/cost zones, stop placement and target zones.\n")
+		sb.WriteString("3. Claw402.ai Cost/Liquidation Heatmap: crowded liquidation/cost zones for relative stress/crowding context (stops/targets come from ATR and candle structure).\n")
 		sb.WriteString("4. Raw OHLCV candles: entry timing, trend structure, volatility and risk/reward validation.\n\n")
 		sb.WriteString("# Trading Rules\n\n")
 		sb.WriteString("- Manage existing positions before opening new ones.\n")
@@ -261,7 +261,7 @@ func (e *StrategyEngine) buildVergexSystemPrompt(accountEquity float64, variant 
 func vergexHoldRules() string {
 	return "- Hold for meaningful moves, do not churn: hold new positions for at least 90 minutes; never close inside the -2%..+3% noise band before ~3 hours; after closing a symbol wait 4 hours before re-entry; open at most 1-2 new positions per hour. Small in-and-out trades bled this account to death on fees.\n" +
 		"- Fees are the main edge killer: a round trip costs ~0.1% of notional. Only take setups whose realistic target is well beyond fees: stop-loss around -3% and take-profit around +8% or beyond. Do not aim for 0.2-0.3% scalps — they cannot cover fees.\n" +
-		"- Give positions room to develop: place stops beyond short-term noise (around -3%) and targets at meaningful heatmap resistance/liquidation zones (around +8%). Do not exit on small green or small red.\n" +
+		"- Give positions room to develop: set stops and targets from ATR and recent candle structure (Decision Data Priority #4) — stops beyond short-term noise (around -3%) and targets at a realistic multiple of ATR on the prevailing trend (around +8%). Use the cost/liquidation heatmap only as relative stress/crowding context, never as a stop/target level. Do not exit on small green or small red.\n" +
 		"- Data note: the cost/liquidation heatmap and net-flow are self-built proxies derived from public funding, open-interest and mark data, not a full trader-book ledger; treat them as stress indicators, not absolute liquidation levels.\n\n"
 }
 
@@ -308,7 +308,7 @@ func writeVergexSchemaPrompt(sb *strings.Builder, zh bool) {
 		sb.WriteString("- Position: current holdings with side, entry, leverage, unrealized PnL and liquidation price.\n")
 		sb.WriteString("- Claw402 Ranking: tradable candidate pool, rank, direction and category for this cycle.\n")
 		sb.WriteString("- Signal Lab: per-symbol Claw402 deep signal used to confirm trend and quality.\n")
-		sb.WriteString("- Cost/Liquidation Heatmap: cost and liquidation clusters used for stops, targets and crowding risk.\n")
+		sb.WriteString("- Cost/Liquidation Heatmap: cost and liquidation clusters for relative stress/crowding context (stops/targets from ATR and candle structure).\n")
 		sb.WriteString("- Raw OHLCV Kline: raw candles used for trend structure, entry timing and risk/reward.\n")
 	} else {
 		sb.WriteString("# Claw402.ai TradeFi Data Guide\n\n")
@@ -318,7 +318,7 @@ func writeVergexSchemaPrompt(sb *strings.Builder, zh bool) {
 		sb.WriteString("- Position: current holdings with side, entry, leverage, unrealized PnL and liquidation price.\n")
 		sb.WriteString("- Claw402 Ranking: tradable candidate pool, rank, direction and category for this cycle.\n")
 		sb.WriteString("- Signal Lab: per-symbol Claw402 deep signal used to confirm trend and quality.\n")
-		sb.WriteString("- Cost/Liquidation Heatmap: cost and liquidation clusters used for stops, targets and crowding risk.\n")
+		sb.WriteString("- Cost/Liquidation Heatmap: cost and liquidation clusters for relative stress/crowding context (stops/targets from ATR and candle structure).\n")
 		sb.WriteString("- Raw OHLCV Kline: raw candles used for trend structure, entry timing and risk/reward.\n")
 	}
 }

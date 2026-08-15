@@ -2,7 +2,6 @@ package vergex
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,34 +9,27 @@ import (
 	"net/http"
 	"net/url"
 	"nofx/mcp"
-	"nofx/mcp/payment"
 	"nofx/provider/hyperliquid"
 	"os"
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/ethereum/go-ethereum/crypto"
 )
 
 const (
-	DefaultBaseURL                    = "https://claw402.ai" // paid claw402 gateway (x402-signed) — used for the heatmap only
-	DefaultChain                      = "mainnet"
-	DefaultMarketType                 = "hip3_perp"
-	MaxSignalRankingItems             = 30
-	SignalRankingPath                 = "/v1/signal/ranking"
-	SignalLabPath                     = "/v1/signal/lab"
-	CostLiquidationHeatmapPath        = "/v1/signal/heatmap"
-	Claw402CostLiquidationHeatmapPath = "/api/v1/vergex/cost-liquidation-heatmap"
-	FlowMarketsPath                   = "/v1/netflow/ranking"
+	DefaultChain               = "mainnet"
+	DefaultMarketType          = "hip3_perp"
+	MaxSignalRankingItems      = 30
+	SignalRankingPath          = "/v1/signal/ranking"
+	SignalLabPath              = "/v1/signal/lab"
+	CostLiquidationHeatmapPath = "/v1/signal/heatmap"
+	FlowMarketsPath            = "/v1/netflow/ranking"
 )
 
 type Client struct {
-	baseURL        string // self-hosted signal service (ranking / lab / netflow)
-	claw402BaseURL string // paid claw402 gateway (heatmap only)
-	privateKey     *ecdsa.PrivateKey
-	httpClient     *http.Client
-	logger         mcp.Logger
+	baseURL    string // self-hosted signal service (ranking / lab / netflow / heatmap)
+	httpClient *http.Client
+	logger     mcp.Logger
 }
 
 type Query struct {
@@ -75,19 +67,18 @@ type MarketAnalysis struct {
 	HeatmapError   string          `json:"heatmap_error,omitempty"`
 }
 
-// NewClient builds a hybrid vergex client.
+// NewClient builds a self-hosted vergex client.
 //
-// Ranking, signal-lab, and netflow are served by the self-hosted signal
-// service (baseURL falls back to SIGNAL_SERVICE_BASE_URL, then
-// http://localhost:8480). The cost/liquidation heatmap is served by the paid
-// claw402 gateway (https://claw402.ai) via x402 when a wallet key is available;
-// otherwise the heatmap degrades to the signal-service /v1/signal/heatmap
-// endpoint so it still returns data.
+// Ranking, signal-lab, net-flow, and the cost/liquidation heatmap are all
+// served by the self-hosted signal service (baseURL falls back to
+// SIGNAL_SERVICE_BASE_URL, then http://localhost:8480). The heatmap is always
+// served by this self-hosted proxy — it is decoupled from the paid claw402
+// gateway.
 //
-// walletKeyHex is the claw402 ECDSA private key. When empty it falls back to
-// the CLAW402_WALLET_KEY env var. If still empty (or invalid), the client keeps
-// a nil key and the heatmap transparently degrades to the signal service. The
-// key is never logged.
+// walletKeyHex is accepted for backward compatibility (callers may still pass
+// the claw402 wallet key) but is no longer used by this client. The claw402
+// wallet key (CLAW402_WALLET_KEY) remains in use only by the AI model provider
+// and is never logged here.
 func NewClient(baseURL, walletKeyHex string, logger mcp.Logger) *Client {
 	if baseURL == "" {
 		baseURL = os.Getenv("SIGNAL_SERVICE_BASE_URL")
@@ -99,27 +90,11 @@ func NewClient(baseURL, walletKeyHex string, logger mcp.Logger) *Client {
 	if logger == nil {
 		logger = mcp.NewNoopLogger()
 	}
-	c := &Client{
-		baseURL:        baseURL,
-		claw402BaseURL: strings.TrimRight(DefaultBaseURL, "/"),
-		httpClient:     &http.Client{Timeout: 30 * time.Second},
-		logger:         logger,
+	return &Client{
+		baseURL:    baseURL,
+		httpClient: &http.Client{Timeout: 30 * time.Second},
+		logger:     logger,
 	}
-
-	if walletKeyHex == "" {
-		walletKeyHex = os.Getenv("CLAW402_WALLET_KEY")
-	}
-	if walletKeyHex == "" {
-		return c
-	}
-	hexKey := strings.TrimPrefix(strings.TrimSpace(walletKeyHex), "0x")
-	pk, err := crypto.HexToECDSA(hexKey)
-	if err != nil {
-		logger.Warnf("⚠️  [claw402] invalid wallet private key; heatmap will degrade to the signal service: %v", err)
-		return c
-	}
-	c.privateKey = pk
-	return c
 }
 
 // BaseURL returns the self-hosted signal-service base URL this client talks to.
@@ -156,20 +131,10 @@ func (c *Client) GetCostLiquidationHeatmap(ctx context.Context, q Query) (json.R
 	params := url.Values{}
 	addQueryDefaults(params, q, true)
 
-	// When a claw402 wallet key is available, the heatmap is a paid x402 call
-	// against the claw402 gateway. Otherwise it degrades to the self-hosted
-	// signal service so it still returns data.
-	if c != nil && c.privateKey != nil {
-		fullURL := c.claw402BaseURL + Claw402CostLiquidationHeatmapPath
-		if encoded := params.Encode(); encoded != "" {
-			fullURL += "?" + encoded
-		}
-		body, err := c.doX402GET(ctx, fullURL)
-		if err != nil {
-			return nil, err
-		}
-		return body, nil
-	}
+	// The heatmap is always served by the self-hosted signal service proxy
+	// (/v1/signal/heatmap). It is decoupled from the paid claw402 gateway, so
+	// the claw402 wallet key is never used here — the AI model keeps its own
+	// wallet key for model calls, but the heatmap never routes to it.
 	return c.doGET(ctx, CostLiquidationHeatmapPath, params)
 }
 
@@ -206,39 +171,6 @@ func addQueryDefaults(params url.Values, q Query, includeMarket bool) {
 	if q.LiqBand != "" {
 		params.Set("liqBand", q.LiqBand)
 	}
-}
-
-// doX402GET performs an x402-signed GET against the claw402 gateway. Used only
-// for the paid heatmap endpoint.
-func (c *Client) doX402GET(ctx context.Context, fullURL string) ([]byte, error) {
-	if c == nil || c.privateKey == nil {
-		return nil, fmt.Errorf("vergex x402 client is nil or no key set")
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	buildReq := func() (*http.Request, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("X-Client-ID", "nofx")
-		return req, nil
-	}
-
-	body, err := payment.DoX402Request(
-		ctx,
-		c.httpClient,
-		buildReq,
-		payment.MakeClaw402SignFunc(c.privateKey),
-		"claw402-vergex",
-		c.logger,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("vergex request failed (%s): %w", fullURL, err)
-	}
-	return body, nil
 }
 
 func (c *Client) doGET(ctx context.Context, path string, params url.Values) ([]byte, error) {

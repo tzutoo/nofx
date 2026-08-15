@@ -142,3 +142,23 @@ func containsCJK(text string) bool {
 	}
 	return false
 }
+
+// TestBuildSystemPromptUsesAtrCandleStops verifies the vergex prompt derives
+// stops/targets from ATR and recent candle structure rather than from the
+// cost/liquidation heatmap, which is now treated only as relative
+// stress/crowding context (decoupled from paid claw402).
+func TestBuildSystemPromptUsesAtrCandleStops(t *testing.T) {
+	cfg := store.GetDefaultStrategyConfig("en")
+	cfg.CoinSource.SourceType = "vergex_signal"
+	cfg.CoinSource.VergexLimit = 5
+
+	engine := NewStrategyEngine(&cfg)
+	prompt := engine.BuildSystemPrompt(30, "balanced")
+
+	if !strings.Contains(prompt, "set stops and targets from ATR and recent candle structure") {
+		t.Fatalf("vergex prompt should set stops/targets from ATR and candle structure:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "never as a stop/target level") {
+		t.Fatalf("vergex prompt should forbid using the heatmap as a stop/target level:\n%s", prompt)
+	}
+}
