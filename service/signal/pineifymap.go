@@ -31,6 +31,55 @@ func pineifyTicker(base string) string {
 	return base
 }
 
+// pineifyCryptoTicker resolves a Hyperliquid crypto-major base to the bare
+// Pineify ticker it maps to (e.g. BTC -> "BTC", enriched as the Binance USDT
+// pair BTCUSDT), or "" if the base is not a Pineify-covered crypto major.
+//
+// This is the crypto path, distinct from pineifyTicker's US-stock path. Crypto
+// majors are enriched with TA ONLY (get-technical-analysis-snapshot on the
+// bare <BASE>USDT ticker); events and rating are US-equity only and Pineify
+// returns nothing for them. Only real Binance USDT pairs AND plausible
+// Hyperliquid core_perp names are included, so long-tail / exotic names that
+// either don't trade on Binance or differ from HL's naming are excluded.
+func pineifyCryptoTicker(base string) string {
+	base = strings.ToUpper(strings.TrimSpace(base))
+	base = strings.TrimPrefix(base, "XYZ:")
+	if base == "" {
+		return ""
+	}
+	if !pineifyCryptoMajors[base] {
+		return ""
+	}
+	return base
+}
+
+// pineifyCryptoMajors is the set of Hyperliquid core_perp crypto majors that
+// also trade on Binance USDT (so Pineify's TA tool, which uses bare
+// <BASE>USDT tickers, can resolve them). BTC/ETH and the top-cap alts cover the
+// ~20 majors that map cleanly from HL core_perp naming to Binance.
+var pineifyCryptoMajors = map[string]bool{
+	"BTC":  true,
+	"ETH":  true,
+	"SOL":  true,
+	"XRP":  true,
+	"DOGE": true,
+	"ADA":  true,
+	"AVAX": true,
+	"BNB":  true,
+	"LINK": true,
+	"LTC":  true,
+	"BCH":  true,
+	"ATOM": true,
+	"XMR":  true,
+	"NEAR": true,
+	"SUI":  true,
+	"APT":  true,
+	"INJ":  true,
+	"DOT":  true,
+	"UNI":  true,
+	"TRX":  true,
+}
+
 // pineifyNonMappable is the hardened exclusion set for stock-classified but
 // non-US issuers, indexes and ETFs. Pineify is US-listed equities; these either
 // are not listed US or resolve poorly (returns none) on Pineify screeners.
@@ -62,6 +111,9 @@ var pineifyNonMappable = map[string]bool{
 	"NIKKEI": true,
 	"HSI":    true,
 	"CSI300": true,
+	"JP225":  true, // Japan-225 index
+	"KR200":  true, // Korea-200 index
+	"DXY":    true, // Dollar index
 	"XLE":    true,
 	"EWY":    true,
 	"EWJ":    true,

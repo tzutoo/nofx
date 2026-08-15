@@ -536,7 +536,9 @@ func taStrengthWord(rsi, adx float64) string {
 	return "low"
 }
 
-// pineifyTADetail builds the technical-row detail text.
+// pineifyTADetail builds the technical-row detail text. When Source is set
+// (crypto TA resolved from a Binance USDT pair), it is appended in parens so
+// the AI knows the quote is Binance-derived, not Hyperliquid.
 func pineifyTADetail(p *PineifySnapshot) string {
 	var parts []string
 	if p.Trend != "" {
@@ -548,10 +550,14 @@ func pineifyTADetail(p *PineifySnapshot) string {
 	if p.ADX > 0 {
 		parts = append(parts, fmt.Sprintf("ADX=%.1f", p.ADX))
 	}
-	if len(parts) == 0 {
-		return "Pineify technical overlay."
+	suffix := ""
+	if p.Source != "" {
+		suffix = " (" + p.Source + ")"
 	}
-	return "Pineify overlay: " + strings.Join(parts, ", ") + "."
+	if len(parts) == 0 {
+		return "Pineify technical overlay" + suffix + "."
+	}
+	return "Pineify overlay: " + strings.Join(parts, ", ") + suffix + "."
 }
 
 // pineifyEventsDetail summarizes up to 3 upcoming events.

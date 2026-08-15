@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +23,9 @@ func TestPineifyTickerMapping(t *testing.T) {
 		"xyz:NBIS":  "NBIS",
 		"NVDA":      "NVDA",
 		"xyz:SP500": "",    // index
+		"xyz:JP225": "",    // index
+		"xyz:KR200": "",    // index
+		"xyz:DXY":   "",    // index
 		"xyz:GOLD":  "",    // commodity
 		"xyz:SMSN":  "",    // non-US exclusion
 		"xyz:SKHX":  "",    // non-US exclusion
@@ -33,6 +37,102 @@ func TestPineifyTickerMapping(t *testing.T) {
 		if got != want {
 			t.Errorf("pineifyTicker(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// pineifyCryptoTicker mapping (crypto-major path)
+// ---------------------------------------------------------------------------
+
+func TestPineifyCryptoTickerMapping(t *testing.T) {
+	majors := map[string]string{
+		"BTC": "BTC",
+		"ETH": "ETH",
+		"SOL": "SOL",
+		"XRP": "XRP",
+		"SUI": "SUI",
+		"":    "",
+	}
+	for in, want := range majors {
+		got := pineifyCryptoTicker(baseOf(in))
+		if got != want {
+			t.Errorf("pineifyCryptoTicker(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// Long-tail crypto and non-crypto must NOT map via the crypto path.
+	nonMajors := []string{"XYZ:SOMELONGTAIL", "XYZ:PEPE123", "NVDA", "SP500"}
+	for _, in := range nonMajors {
+		if got := pineifyCryptoTicker(baseOf(in)); got != "" {
+			t.Errorf("pineifyCryptoTicker(%q) = %q, want \"\" (not a crypto major)", in, got)
+		}
+	}
+}
+
+// TestEnrichCryptoMajorTAOnly verifies a crypto major is enriched with TA only
+// (events + rating are skipped) and the source is disclosed as Binance.
+func TestEnrichCryptoMajorTAOnly(t *testing.T) {
+	srv := newFakeMCP()
+	ts := newTestHTTPServer(srv.handle())
+	defer ts.Close()
+
+	cfg := &Config{
+		PineifyMCPToken:      "test-token",
+		PineifyBaseURL:       ts.URL,
+		PineifyRatePerMinute: 100,
+	}
+	client := newPineifyClient(cfg, nil, nil)
+	ctx := context.Background()
+	if err := client.initialize(ctx); err != nil {
+		t.Fatalf("initialize failed: %v", err)
+	}
+	s := &Service{cfg: cfg, httpClient: ts.Client()}
+	limiter := newTokenBucket(100)
+	snap, calls := s.enrichSymbol(ctx, client, limiter, "BTC", "core_perp", 10)
+	if snap == nil {
+		t.Fatal("snapshot is nil")
+	}
+	if snap.Coverage != "ta" {
+		t.Errorf("coverage = %q, want ta (events/rating skipped for crypto)", snap.Coverage)
+	}
+	if snap.RSI != 62 {
+		t.Errorf("rsi = %v, want 62", snap.RSI)
+	}
+	if snap.Source != "Binance BTCUSDT" {
+		t.Errorf("source = %q, want Binance BTCUSDT (Binance disclosure)", snap.Source)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 (TA only)", calls)
+	}
+
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if srv.toolCalls["get-technical-analysis-snapshot"] != 1 {
+		t.Errorf("TA called %d times, want 1", srv.toolCalls["get-technical-analysis-snapshot"])
+	}
+	if srv.toolCalls["get-stock-event-context"] != 0 {
+		t.Errorf("events should NOT be called for crypto, got %d", srv.toolCalls["get-stock-event-context"])
+	}
+	if srv.toolCalls["get-ai-stock-rating"] != 0 {
+		t.Errorf("rating should NOT be called for crypto, got %d", srv.toolCalls["get-ai-stock-rating"])
+	}
+}
+
+// TestEnrichCryptoNonMajorNotMappable verifies a long-tail crypto base (not in
+// the crypto-major set) is not mappable via the crypto path.
+func TestEnrichCryptoNonMajorNotMappable(t *testing.T) {
+	cfg := &Config{PineifyMCPToken: "x", PineifyRatePerMinute: 10}
+	s := &Service{cfg: cfg}
+	client := newPineifyClient(cfg, nil, nil)
+	limiter := newTokenBucket(10)
+	snap, calls := s.enrichSymbol(context.Background(), client, limiter, "SOMELONGTAIL", "core_perp", 10)
+	if snap == nil || snap.Error == "" {
+		t.Fatalf("expected error for non-major crypto, got %+v", snap)
+	}
+	if snap.Coverage != "" {
+		t.Errorf("coverage should be empty for non-major crypto, got %q", snap.Coverage)
+	}
+	if calls != 0 {
+		t.Errorf("calls = %d, want 0 (not mappable)", calls)
 	}
 }
 
@@ -82,19 +182,21 @@ func TestTokenBucketCancellation(t *testing.T) {
 // fakeMCP is a minimal fake MCP JSON-RPC server for tests. It returns canned
 // tool results and records calls.
 type fakeMCP struct {
-	mu     sync.Mutex
-	calls  map[string]int
-	taJSON string
-	events string
-	rating string
+	mu        sync.Mutex
+	calls     map[string]int
+	toolCalls map[string]int
+	taJSON    string
+	events    string
+	rating    string
 }
 
 func newFakeMCP() *fakeMCP {
 	return &fakeMCP{
-		calls:  make(map[string]int),
-		taJSON: `{"snapshots":[{"timeframe":"1d","values":{"signal":"bullish","score":82,"rsi14":62,"adx14":28}}]}`,
-		events: `{"data":{"upcomingEvents":[{"eventType":"earnings","date":"2026-08-26","epsEstimate":2.08}],"recentEvents":[{"eventType":"news","title":"NVDA news","eventAt":"2026-08-14T20:02:10.000Z"}]}}`,
-		rating: `{"instrument":{"symbol":"NVDA"},"rating":{"overallRank":295,"scores":{"overall":8,"change":0,"fundamental":9,"technical":3}}}`,
+		calls:     make(map[string]int),
+		toolCalls: make(map[string]int),
+		taJSON:    `{"snapshots":[{"timeframe":"1d","values":{"signal":"bullish","score":82,"rsi14":62,"adx14":28}}]}`,
+		events:    `{"data":{"upcomingEvents":[{"eventType":"earnings","date":"2026-08-26","epsEstimate":2.08}],"recentEvents":[{"eventType":"news","title":"NVDA news","eventAt":"2026-08-14T20:02:10.000Z"}]}}`,
+		rating:    `{"instrument":{"symbol":"NVDA"},"rating":{"overallRank":295,"scores":{"overall":8,"change":0,"fundamental":9,"technical":3}}}`,
 	}
 }
 
@@ -121,6 +223,9 @@ func (f *fakeMCP) handle() http.HandlerFunc {
 			w.WriteHeader(http.StatusOK)
 		case "tools/call":
 			name, _ := req.Params["name"].(string)
+			f.mu.Lock()
+			f.toolCalls[name]++
+			f.mu.Unlock()
 			var result string
 			switch name {
 			case "get-technical-analysis-snapshot":
@@ -318,6 +423,23 @@ func TestRankPineifyQualifierHardReject(t *testing.T) {
 
 func newTestHTTPServer(h http.HandlerFunc) *httptest.Server {
 	return httptest.NewServer(h)
+}
+
+// ---------------------------------------------------------------------------
+// Source disclosure in the Signal Lab technical detail
+// ---------------------------------------------------------------------------
+
+func TestPineifyTADetailSourceDisclosure(t *testing.T) {
+	// Crypto TA carries a Binance source so the AI knows it's not HL-derived.
+	got := pineifyTADetail(&PineifySnapshot{Trend: "bullish", RSI: 62, ADX: 28, Source: "Binance BTCUSDT"})
+	if !strings.Contains(got, "Binance BTCUSDT") {
+		t.Errorf("detail = %q, want it to disclose Binance source", got)
+	}
+	// No source -> no parens appended.
+	got2 := pineifyTADetail(&PineifySnapshot{Trend: "bullish", RSI: 62})
+	if strings.Contains(got2, "Binance") {
+		t.Errorf("detail = %q, want no Binance source for non-crypto", got2)
+	}
 }
 
 // ---------------------------------------------------------------------------

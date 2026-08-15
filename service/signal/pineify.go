@@ -48,6 +48,11 @@ type PineifySnapshot struct {
 	Error string `json:"error"`
 	// FetchedAt is when this snapshot was refreshed.
 	FetchedAt time.Time `json:"fetched_at"`
+
+	// Source discloses where the data is derived from (e.g. "Binance BTCUSDT"
+	// for crypto TA resolved from the Binance USDT pair), so the AI never
+	// mistakes a third-party exchange quote for Hyperliquid.
+	Source string `json:"source"`
 }
 
 // PineifyEvent is a single catalyst/event.
@@ -129,9 +134,11 @@ func (s *Service) enrichWithPineify(ctx context.Context, assets map[string]*asse
 	// Build the enrichment ordering:
 	//   1. The engine's current candidate set (highest priority — these are the
 	//      symbols the AI will actually judge this cycle).
-	//   2. The strongest mappable items by composite score (top-K).
-	//   3. The remaining mappable universe (round-robin) to fill the budget.
+	//   2. The strongest TradeFi (hip3_perp) mappable items by score (top-K).
+	//   3. The crypto majors (core_perp, TA-only).
+	//   4. The remaining mappable universe (round-robin) to fill the budget.
 	mappable := s.mappableBoard(assets)
+	cryptoMappable := s.cryptoMajorBoard(assets)
 	byScore := make([]string, len(mappable))
 	copy(byScore, mappable)
 	sort.Slice(byScore, func(i, j int) bool { return assets[byScore[i]].Score > assets[byScore[j]].Score })
@@ -139,13 +146,22 @@ func (s *Service) enrichWithPineify(ctx context.Context, assets map[string]*asse
 	priority := s.Priority()
 	var ordered []string
 	seen := make(map[string]bool)
+	mappableFor := func(a *asset) bool {
+		if a == nil {
+			return false
+		}
+		if a.MarketType == "core_perp" {
+			return pineifyCryptoTicker(baseOf(a.Symbol)) != ""
+		}
+		return pineifyTicker(baseOf(a.Symbol)) != ""
+	}
 	for _, sym := range priority {
-		if assets[sym] != nil && pineifyTicker(baseOf(sym)) != "" && !seen[sym] {
+		if a := assets[sym]; a != nil && mappableFor(a) && !seen[sym] {
 			ordered = append(ordered, sym)
 			seen[sym] = true
 		}
 	}
-	for _, sym := range byScore {
+	for _, sym := range byScore { // TradeFi (hip3_perp) top-K
 		if len(ordered) >= 10 {
 			break
 		}
@@ -154,14 +170,24 @@ func (s *Service) enrichWithPineify(ctx context.Context, assets map[string]*asse
 			seen[sym] = true
 		}
 	}
-	for _, sym := range mappable {
+	for _, sym := range cryptoMappable { // crypto majors (TA-only)
 		if !seen[sym] {
 			ordered = append(ordered, sym)
 			seen[sym] = true
 		}
 	}
-
-	// Enrich in priority order. Every Pineify call (including failed ones)
+	for _, sym := range mappable { // round-robin rest (TradeFi)
+		if !seen[sym] {
+			ordered = append(ordered, sym)
+			seen[sym] = true
+		}
+	}
+	for _, sym := range cryptoMappable { // round-robin rest (crypto)
+		if !seen[sym] {
+			ordered = append(ordered, sym)
+			seen[sym] = true
+		}
+	}
 	// consumes budget; the remaining budget is threaded in so we never overshoot.
 	used := 0
 	for _, sym := range ordered {
@@ -179,9 +205,9 @@ func (s *Service) enrichWithPineify(ctx context.Context, assets map[string]*asse
 
 // mappableBoard returns the xyz: TradeFi (hip3_perp) symbols that map to a
 // Pineify ticker, ordered best-first by their composite score so the priority
-// tier enriches the board's strongest candidates. Core-perp crypto is excluded
-// by default (Pineify crypto augmentation is optional/off-by-default and would
-// otherwise consume the whole budget on the long tail).
+// tier enriches the board's strongest candidates. Core-perp crypto is handled
+// separately via cryptoMajorBoard (TA-only); only the TradeFi board is
+// enumerated here so the long tail does not crowd the US-stock priority tier.
 func (s *Service) mappableBoard(assets map[string]*asset) []string {
 	var out []string
 	for _, a := range assets {
@@ -198,21 +224,55 @@ func (s *Service) mappableBoard(assets map[string]*asset) []string {
 	return out
 }
 
+// cryptoMajorBoard returns the core_perp crypto-major symbols that map to a
+// Pineify ticker (the ~20 Binance USDT majors that also trade on Hyperliquid),
+// ordered best-first by composite score. Crypto majors are enriched with TA
+// ONLY — events and rating are US-equity centric and Pineify returns nothing
+// for them, so they never consume a budget slot.
+func (s *Service) cryptoMajorBoard(assets map[string]*asset) []string {
+	var out []string
+	for _, a := range assets {
+		if a.MarketType != "core_perp" {
+			continue
+		}
+		if pineifyCryptoTicker(baseOf(a.Symbol)) != "" {
+			out = append(out, a.Symbol)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return assets[out[i]].Score > assets[out[j]].Score
+	})
+	return out
+}
+
 // enrichSymbol fetches the Pineify overlay for one symbol, applying tool
 // priority and degrading gracefully on any failure. It returns the snapshot and
 // the number of Pineify calls actually made (each limiter.acquire = 1 call).
 func (s *Service) enrichSymbol(ctx context.Context, client *pineifyClient, limiter *tokenBucket, sym, marketType string, budgetLeft int) (*PineifySnapshot, int) {
 	snap := &PineifySnapshot{FetchedAt: time.Now()}
 	base := baseOf(sym)
-	ticker := pineifyTicker(base)
+	crypto := marketType == "core_perp"
+	var ticker string
+	if crypto {
+		ticker = pineifyCryptoTicker(base)
+	} else {
+		ticker = pineifyTicker(base)
+	}
 	if ticker == "" {
 		snap.Error = "not pineify-mappable"
 		return snap, 0
 	}
-	crypto := marketType == "core_perp"
+	// Source disclosure: crypto TA is resolved from the Binance USDT pair
+	// (<BASE>USDT), not from Hyperliquid — surface that so the AI never
+	// mistakes a third-party exchange quote for HL.
+	if crypto {
+		snap.Source = "Binance " + cryptoTicker(ticker, true)
+	}
 	calls := 0
 
-	// Tier 1: technicals + events. Stop if no budget remains.
+	// Tier 1: technicals. Events are skipped for crypto (get-stock-event-context
+	// is US-equity centric; Pineify returns nothing for crypto). Stop if no
+	// budget remains.
 	if budgetLeft <= 0 {
 		snap.Error = "budget exhausted"
 		return snap, calls
@@ -232,22 +292,25 @@ func (s *Service) enrichSymbol(ctx context.Context, client *pineifyClient, limit
 		snap.covered("ta")
 	}
 
-	if budgetLeft <= calls {
-		snap.Error = "budget exhausted"
-		return snap, calls
-	}
-	if err := limiter.acquire(ctx); err != nil {
-		snap.Error = err.Error()
-		return snap, calls
-	}
-	calls++
-	events, err := client.callTool(ctx, "get-stock-event-context", map[string]any{
-		"symbol": ticker,
-	})
-	if err != nil {
-		s.logger().Warnf("⚠️  Pineify events failed for %s: %v", sym, err)
-	} else if snap.applyEvents(events) {
-		snap.covered("events")
+	// Events (US stocks only; Pineify event-context is US-equity centric).
+	if !crypto {
+		if budgetLeft <= calls {
+			snap.Error = "budget exhausted"
+			return snap, calls
+		}
+		if err := limiter.acquire(ctx); err != nil {
+			snap.Error = err.Error()
+			return snap, calls
+		}
+		calls++
+		events, err := client.callTool(ctx, "get-stock-event-context", map[string]any{
+			"symbol": ticker,
+		})
+		if err != nil {
+			s.logger().Warnf("⚠️  Pineify events failed for %s: %v", sym, err)
+		} else if snap.applyEvents(events) {
+			snap.covered("events")
+		}
 	}
 
 	// Tier 2: rating (US stocks only).

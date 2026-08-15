@@ -38,7 +38,7 @@ func XYZCategory(baseSymbol string) string {
 		return "stock"
 	case "GOLD", "SILVER", "COPPER", "NATGAS", "URANIUM", "ALUMINIUM", "PLATINUM", "PALLADIUM", "BRENTOIL", "CL", "CORN", "WHEAT", "TTF":
 		return "commodity"
-	case "SPX", "NDX", "DJI", "VIX", "DAX", "FTSE", "NIKKEI", "HSI", "CSI300", "XYZ100", "XYZ25", "XYZ50":
+	case "SPX", "NDX", "DJI", "VIX", "DAX", "FTSE", "NIKKEI", "HSI", "CSI300", "XYZ100", "XYZ25", "XYZ50", "SP500", "JP225", "KR200", "DXY", "XLE", "EWY", "EWJ", "EWZ", "EWT", "NIFTY", "IBOV":
 		return "index"
 	case "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "MXN", "BRL", "TRY", "ZAR", "CNH", "KRW":
 		return "forex"
