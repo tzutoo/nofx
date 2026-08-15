@@ -301,3 +301,44 @@ func (t *HyperliquidTrader) roundPriceToSigfigs(price float64) float64 {
 	rounded := float64(int(price*multiplier+0.5)) / multiplier
 	return rounded
 }
+
+// roundPriceForOrder rounds a price to a value Hyperliquid accepts for the given
+// coin. It must satisfy BOTH Hyperliquid price constraints:
+//
+//  1. at most 5 significant figures, AND
+//  2. at most MAX_DECIMALS - szDecimals decimal places, where MAX_DECIMALS is
+//     6 for perps (8 for spot).
+//
+// The second constraint is what makes a fixed 5-sig-fig rounding wrong for
+// low-priced coins: for example HEMI at ~0.0065, 5 sig figs yields ~0.0067024
+// (too many decimals → not on a valid price tick → "Order has invalid price").
+// So we snap the 5-sig-fig value down to the per-symbol price tick
+// 10^-(6 - szDecimals). Rounding to fewer decimal places can only reduce the
+// number of significant figures, so both constraints remain satisfied.
+func (t *HyperliquidTrader) roundPriceForOrder(coin string, price float64) float64 {
+	if price == 0 {
+		return 0
+	}
+	if strings.HasPrefix(coin, "xyz:") {
+		// xyz dex uses its own precision conventions; keep the existing
+		// 5-significant-figure rounding for it.
+		return t.roundPriceToSigfigs(price)
+	}
+	szDecimals := t.getSzDecimals(coin)
+
+	// Perps: price may have at most 6 - szDecimals decimal places.
+	maxDecimals := 6 - szDecimals
+	if maxDecimals < 0 {
+		maxDecimals = 0
+	}
+
+	// Start from 5 significant figures (respects constraint 1)...
+	r := t.roundPriceToSigfigs(price)
+
+	// ...then snap to the per-symbol price tick (respects constraint 2).
+	multiplier := 1.0
+	for i := 0; i < maxDecimals; i++ {
+		multiplier *= 10.0
+	}
+	return float64(int(r*multiplier+0.5)) / multiplier
+}

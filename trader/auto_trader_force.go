@@ -91,6 +91,22 @@ func (at *AutoTrader) ensureLongShortCoverage(decisions []kernel.Decision, ctx *
 				at.logInfof("⚖️ Skipped forced %s %s: signal score %.2f below %.2f floor", action, c.Symbol, c.Score, forcedCoverageMinScore)
 				continue
 			}
+			// Never force-open a symbol without a valid market price. The AI
+			// prompt path already prunes candidates that lack valid market/K-line
+			// data, but the forced-open path draws from DirectionalCandidates()
+			// (vergex ranking) which may still contain symbols with stale or
+			// missing market data. Opening on a bad price yields an order
+			// Hyperliquid rejects (or worse, an off-market fill), so skip the
+			// symbol and log instead of placing a bad order.
+			if at.trader == nil {
+				at.logInfof("⚖️ Skipped forced %s %s: trader not configured", action, c.Symbol)
+				continue
+			}
+			mp, mErr := at.trader.GetMarketPrice(c.Symbol)
+			if mErr != nil || mp <= 0 {
+				at.logInfof("⚖️ Skipped forced %s %s: no valid market price (err=%v, price=%.8f)", action, c.Symbol, mErr, mp)
+				continue
+			}
 			b := universeBaseKey(c.Symbol)
 			if b == "" || held[b] {
 				continue
