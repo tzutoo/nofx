@@ -49,7 +49,7 @@ func LoadConfig() *Config {
 		HyperliquidWalletAddr: env("HYPERLIQUID_WALLET_ADDR", ""),
 		PineifyMCPToken:       env("PINEIFY_MCP_TOKEN", ""),
 		PineifyBaseURL:        env("PINEIFY_BASE_URL", "https://agents.pineify.app/mcp"),
-		PineifyRatePerMinute:  clampInt(envInt("PINEIFY_RATE_PER_MINUTE", 20), 1, 30),
+		PineifyRatePerMinute:  clampInt(envInt("PINEIFY_RATE_PER_MINUTE", 40), 1, 40),
 		PineifyBoostEnabled:   envBool("PINEIFY_BOOST_ENABLED", false),
 		PineifyHardReject:     envBool("PINEIFY_HARD_REJECT", false),
 		PineifyMinConviction:  envFloat("PINEIFY_MIN_CONVICTION", 0.7),

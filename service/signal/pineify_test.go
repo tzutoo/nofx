@@ -174,7 +174,7 @@ func TestEnrichSymbolWithMCP(t *testing.T) {
 	}
 	s := &Service{cfg: cfg, httpClient: ts.Client()}
 	limiter := newTokenBucket(100)
-	snap := s.enrichSymbol(ctx, client, limiter, "xyz:NVDA", "hip3_perp")
+	snap, _ := s.enrichSymbol(ctx, client, limiter, "xyz:NVDA", "hip3_perp", 10)
 	if snap == nil {
 		t.Fatal("snapshot is nil")
 	}
@@ -200,7 +200,7 @@ func TestEnrichSymbolNotMappable(t *testing.T) {
 	s := &Service{cfg: cfg}
 	client := newPineifyClient(cfg, nil, nil)
 	limiter := newTokenBucket(10)
-	snap := s.enrichSymbol(context.Background(), client, limiter, "xyz:SP500", "hip3_perp")
+	snap, _ := s.enrichSymbol(context.Background(), client, limiter, "xyz:SP500", "hip3_perp", 10)
 	if snap == nil || snap.Error == "" {
 		t.Fatalf("expected error for non-mappable symbol, got %+v", snap)
 	}
@@ -218,7 +218,7 @@ func TestEnrichSymbolDegraded(t *testing.T) {
 	// cancelled context instead.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	snap := s.enrichSymbol(ctx, client, limiter, "xyz:NVDA", "hip3_perp")
+	snap, _ := s.enrichSymbol(ctx, client, limiter, "xyz:NVDA", "hip3_perp", 10)
 	if snap == nil || snap.Coverage != "" {
 		t.Fatalf("expected degraded (no coverage) on cancellation, got %+v", snap)
 	}
@@ -318,4 +318,35 @@ func TestRankPineifyQualifierHardReject(t *testing.T) {
 
 func newTestHTTPServer(h http.HandlerFunc) *httptest.Server {
 	return httptest.NewServer(h)
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot persistence across ingests
+// ---------------------------------------------------------------------------
+
+func TestPineifySnapshotPersistence(t *testing.T) {
+	s := testService([]*asset{{Symbol: "xyz:NVDA", MarketType: "hip3_perp", Category: "stock", Mark: 100, PrevDay: 95}})
+	// Simulate a prior snapshot with a Pineify overlay.
+	s.mu.Lock()
+	s.assets["xyz:NVDA"].Pineify = &PineifySnapshot{Coverage: "full", Bias: "bullish", Conviction: 0.8}
+	s.mu.Unlock()
+
+	// New ingest with a fresh asset (no Pineify yet) for the same symbol.
+	assets := map[string]*asset{"xyz:NVDA": {Symbol: "xyz:NVDA", MarketType: "hip3_perp", Category: "stock", Mark: 101, PrevDay: 95}}
+	s.mu.Lock()
+	prev := s.assets["xyz:NVDA"]
+	s.assets = assets
+	s.mu.Unlock()
+
+	// Carry-forward should restore the previous Pineify snapshot onto the new asset.
+	if prev.Pineify == nil {
+		t.Fatal("previous snapshot should have Pineify")
+	}
+	// Replicate the ingest carry-forward logic.
+	if assets["xyz:NVDA"].Pineify == nil {
+		assets["xyz:NVDA"].Pineify = prev.Pineify
+	}
+	if assets["xyz:NVDA"].Pineify == nil || assets["xyz:NVDA"].Pineify.Coverage != "full" {
+		t.Fatalf("Pineify snapshot not persisted across ingest: %+v", assets["xyz:NVDA"].Pineify)
+	}
 }

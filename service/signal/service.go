@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"nofx/logger"
+	"nofx/mcp"
 	"nofx/provider/hyperliquid"
 )
 
@@ -37,6 +39,7 @@ func (a *asset) OIDelta() float64 { return a.OI - a.OIPrev }
 // reductions), caching each product for the ingest interval.
 type Service struct {
 	cfg *Config
+	log mcp.Logger
 
 	httpClient *http.Client
 
@@ -51,6 +54,7 @@ type Service struct {
 func NewService(cfg *Config) *Service {
 	return &Service{
 		cfg:        cfg,
+		log:        logger.NewMCPLogger(),
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 		assets:     make(map[string]*asset),
 	}
@@ -103,10 +107,17 @@ func (s *Service) Ingest(ctx context.Context) error {
 	}
 
 	s.mu.Lock()
-	// Carry OI-delta forward for symbols present in both snapshots.
+	// Carry OI-delta forward for symbols present in both snapshots, and persist
+	// each symbol's last-known Pineify snapshot so a symbol keeps its enrichment
+	// (TA/events/rating) even in cycles where the budget-limited enrichment did
+	// not refresh it. Freshly-enriched snapshots (this cycle) overwrite the
+	// previous one; stale-but-valid data is retained rather than dropped.
 	for sym, a := range assets {
 		if prev, ok := s.assets[sym]; ok {
 			a.OIPrev = prev.OI
+			if a.Pineify == nil {
+				a.Pineify = prev.Pineify
+			}
 		}
 	}
 	s.assets = assets

@@ -107,11 +107,15 @@ func (s *Service) enrichWithPineify(ctx context.Context, assets map[string]*asse
 		return
 	}
 	client := newPineifyClient(s.cfg, s.httpClient, s.logger())
-	limiter := newTokenBucket(s.cfg.PineifyRatePerMinute)
-	budget := s.cfg.PineifyRatePerMinute
-	if budget < 10 {
-		budget = 10
+	// Pineify enforces its own rate limit of 40 calls/min (observed 429s
+	// beyond that). We default to 40 and never exceed it, and cap the per-ingest
+	// budget so a long-tail round-robin cannot blow past the limit.
+	rate := s.cfg.PineifyRatePerMinute
+	if rate <= 0 || rate > 40 {
+		rate = 40
 	}
+	limiter := newTokenBucket(rate)
+	budget := rate // per-ingest call cap (each Pineify call costs one)
 
 	if err := client.initialize(ctx); err != nil {
 		s.logger().Warnf("⚠️  Pineify initialize failed, skipping enrichment: %v", err)
@@ -125,17 +129,19 @@ func (s *Service) enrichWithPineify(ctx context.Context, assets map[string]*asse
 		topK = topK[:10]
 	}
 
-	// Priority tier: always enrich top-K (each gets up to ta + events + rating
-	// = 3 calls), then fill the remaining budget round-robin.
+	// Priority tier: always enrich top-K, then fill the remaining budget
+	// round-robin. Every Pineify call (including failed ones) consumes budget;
+	// the remaining budget is threaded in so we never overshoot past it.
 	used := 0
 	enrich := func(sym string) {
 		if used >= budget {
 			return
 		}
 		a := assets[sym]
-		snap := s.enrichSymbol(ctx, client, limiter, sym, a.MarketType)
+		snap, calls := s.enrichSymbol(ctx, client, limiter, sym, a.MarketType, budget-used)
 		a.Pineify = snap
-		used += callsFor(snap)
+		s.logger().Infof("  pineify %s -> coverage=%q bias=%q calls=%d", sym, snap.Coverage, snap.Bias, calls)
+		used += calls
 	}
 
 	for _, sym := range topK {
@@ -153,37 +159,54 @@ func (s *Service) enrichWithPineify(ctx context.Context, assets map[string]*asse
 			enrich(sym)
 		}
 	}
+	s.logger().Infof("📊 Pineify enrichment complete: %d/%d calls used", used, budget)
 }
 
-// mappableBoard returns symbols that map to a Pineify ticker.
+// mappableBoard returns the xyz: TradeFi (hip3_perp) symbols that map to a
+// Pineify ticker, ordered best-first by their composite score so the priority
+// tier enriches the board's strongest candidates. Core-perp crypto is excluded
+// by default (Pineify crypto augmentation is optional/off-by-default and would
+// otherwise consume the whole budget on the long tail).
 func (s *Service) mappableBoard(assets map[string]*asset) []string {
 	var out []string
 	for _, a := range assets {
+		if a.MarketType != "hip3_perp" {
+			continue
+		}
 		if pineifyTicker(baseOf(a.Symbol)) != "" {
 			out = append(out, a.Symbol)
 		}
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool {
+		return assets[out[i]].Score > assets[out[j]].Score
+	})
 	return out
 }
 
 // enrichSymbol fetches the Pineify overlay for one symbol, applying tool
-// priority and degrading gracefully on any failure.
-func (s *Service) enrichSymbol(ctx context.Context, client *pineifyClient, limiter *tokenBucket, sym, marketType string) *PineifySnapshot {
+// priority and degrading gracefully on any failure. It returns the snapshot and
+// the number of Pineify calls actually made (each limiter.acquire = 1 call).
+func (s *Service) enrichSymbol(ctx context.Context, client *pineifyClient, limiter *tokenBucket, sym, marketType string, budgetLeft int) (*PineifySnapshot, int) {
 	snap := &PineifySnapshot{FetchedAt: time.Now()}
 	base := baseOf(sym)
 	ticker := pineifyTicker(base)
 	if ticker == "" {
 		snap.Error = "not pineify-mappable"
-		return snap
+		return snap, 0
 	}
 	crypto := marketType == "core_perp"
+	calls := 0
 
-	// Tier 1: technicals + events.
+	// Tier 1: technicals + events. Stop if no budget remains.
+	if budgetLeft <= 0 {
+		snap.Error = "budget exhausted"
+		return snap, calls
+	}
 	if err := limiter.acquire(ctx); err != nil {
 		snap.Error = err.Error()
-		return snap
+		return snap, calls
 	}
+	calls++
 	ta, err := client.callTool(ctx, "get-technical-analysis-snapshot", map[string]any{
 		"symbol":     cryptoTicker(ticker, crypto),
 		"timeframes": []string{"1d"},
@@ -194,10 +217,15 @@ func (s *Service) enrichSymbol(ctx context.Context, client *pineifyClient, limit
 		snap.covered("ta")
 	}
 
+	if budgetLeft <= calls {
+		snap.Error = "budget exhausted"
+		return snap, calls
+	}
 	if err := limiter.acquire(ctx); err != nil {
 		snap.Error = err.Error()
-		return snap
+		return snap, calls
 	}
+	calls++
 	events, err := client.callTool(ctx, "get-stock-event-context", map[string]any{
 		"symbol": ticker,
 	})
@@ -208,11 +236,12 @@ func (s *Service) enrichSymbol(ctx context.Context, client *pineifyClient, limit
 	}
 
 	// Tier 2: rating (US stocks only).
-	if !crypto {
+	if !crypto && budgetLeft > calls {
 		if err := limiter.acquire(ctx); err != nil {
 			snap.Error = err.Error()
-			return snap
+			return snap, calls
 		}
+		calls++
 		rating, err := client.callTool(ctx, "get-ai-stock-rating", map[string]any{
 			"symbol": ticker,
 		})
@@ -224,7 +253,7 @@ func (s *Service) enrichSymbol(ctx context.Context, client *pineifyClient, limit
 	}
 
 	snap.computeBias()
-	return snap
+	return snap, calls
 }
 
 // applyTA parses the technical-analysis-snapshot structuredContent
@@ -287,23 +316,6 @@ func (p *PineifySnapshot) computeBias() {
 	}
 }
 
-// callsFor estimates how many rate-limited calls a snapshot consumed.
-func callsFor(snap *PineifySnapshot) int {
-	if snap == nil {
-		return 0
-	}
-	n := 0
-	for _, tier := range strings.Split(snap.Coverage, "+") {
-		if tier != "" {
-			n++
-		}
-	}
-	if n == 0 && snap.Error != "" {
-		return 1
-	}
-	return n
-}
-
 // baseOf strips the xyz:/USDT/etc. prefix to the bare base symbol.
 func baseOf(symbol string) string {
 	return hyperliquid.NormalizeCoinBase(symbol)
@@ -327,8 +339,11 @@ func contains(list []string, s string) bool {
 	return false
 }
 
-// logger returns a mcp.Logger for the service.
+// logger returns the service's mcp.Logger (non-nil).
 func (s *Service) logger() mcp.Logger {
+	if s.log != nil {
+		return s.log
+	}
 	return mcp.NewNoopLogger()
 }
 
