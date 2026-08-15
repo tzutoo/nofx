@@ -118,6 +118,23 @@ func TestMarketSymbolPreservesHIP3XYZPrefix(t *testing.T) {
 	}
 }
 
+func TestMarketSymbolPrefixesByAssetType(t *testing.T) {
+	// Crypto core_perp symbols (present in HL core dex) must be BARE.
+	for _, sym := range []string{"2Z", "ACE", "PUMP", "XAI", "INJ", "KAITO", "STABLE", "BTC"} {
+		if got := MarketSymbol("hip3_perp", sym); got != sym {
+			t.Fatalf("MarketSymbol hip3_perp/%s = %q, want bare %q", sym, got, sym)
+		}
+	}
+	// xyz TradeFi assets must keep the xyz: prefix.
+	for _, tc := range []struct{ in, want string }{
+		{"hip3_perp", "USAR"}, {"hip3_perp", "SP500"}, {"hip3_perp", "NVDA"}, {"hip3_perp", "INTC"},
+	} {
+		if got := MarketSymbol(tc.in, tc.want); got != "xyz:"+tc.want {
+			t.Fatalf("MarketSymbol %s/%s = %q, want xyz:%s", tc.in, tc.want, got, tc.want)
+		}
+	}
+}
+
 func TestAddQueryDefaultsUsesClaw402GatewayParams(t *testing.T) {
 	params := url.Values{}
 	addQueryDefaults(params, Query{

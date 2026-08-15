@@ -322,7 +322,12 @@ func MarketSymbol(marketType, symbol string) string {
 	if base == "" {
 		return ""
 	}
-	if normalizeMarketType(marketType) == "hip3perp" {
+	// Decide the prefix by ASSET TYPE, not by marketType: the dashboard sends
+	// every Signal Matrix symbol with marketType=hip3_perp, including crypto
+	// core_perp symbols (e.g. 2Z, ACE). xyz TradeFi assets (USAR, SP500, NVDA)
+	// must keep the "xyz:" prefix; crypto symbols must be bare so the free proxy
+	// heatmap can resolve them.
+	if hyperliquid.IsXYZAsset(base) {
 		return "xyz:" + base
 	}
 	return base
