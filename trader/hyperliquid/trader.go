@@ -71,6 +71,17 @@ var defaultBuilder = &hyperliquid.BuilderInfo{
 	Fee:     50,
 }
 
+// xyzPerpDexIndex is the HIP-3 perp-dex index for the xyz dex. Verified from
+// the perpDexs API, which returns [null, {name:"xyz",...}] — so xyz dex sits
+// at index 1.
+const xyzPerpDexIndex = 1
+
+// xyzDexAssetIndex computes the HIP-3 perp-dex asset index for an xyz dex asset
+// from its 0-based meta index: 100000 + perpDexIndex*10000 + metaIndex.
+func xyzDexAssetIndex(metaIndex int) int {
+	return 100000 + xyzPerpDexIndex*10000 + metaIndex
+}
+
 // isXyzDexAsset checks if a symbol is an xyz dex asset.
 // Keep this delegated to the provider map so newly listed xyz markets such as
 // SAMSUNG-USDC / SK-HYNIX-USDC cannot accidentally fall through as crypto.

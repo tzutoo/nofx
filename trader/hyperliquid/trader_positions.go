@@ -152,8 +152,17 @@ func (t *HyperliquidTrader) SetMarginMode(symbol string, isCrossMargin bool) err
 
 // SetLeverage sets leverage
 func (t *HyperliquidTrader) SetLeverage(symbol string, leverage int) error {
-	coin := leverageCoin(symbol)
+	coin := convertSymbolToHyperliquid(symbol)
 
+	// xyz dex assets are NOT present in the SDK's core perp meta, so the SDK
+	// UpdateLeverage path fails at CoinToAsset and would silently leave the
+	// account at whatever leverage it previously had (e.g. 10x). Route those
+	// through the direct xyz-dex action path instead (mirrors placeXyzOrder).
+	if strings.HasPrefix(coin, "xyz:") {
+		return t.setXyzLeverage(coin, leverage)
+	}
+
+	// Core crypto perps: the SDK resolves the asset via CoinToAsset correctly.
 	// Call UpdateLeverage (leverage int, name string, isCross bool)
 	// Third parameter: true=cross margin mode, false=isolated margin mode
 	_, err := t.exchange.UpdateLeverage(t.ctx, leverage, coin, t.isCrossMargin)

@@ -58,14 +58,11 @@ func (t *HyperliquidTrader) OpenLong(symbol string, quantity float64, leverage i
 	// Check if this is an xyz dex asset
 	isXyz := strings.HasPrefix(coin, "xyz:")
 
-	// Set leverage before order placement. Hyperliquid supports leverage
-	// updates for HIP-3/XYZ perps as well; skipping this left reused accounts
-	// at whatever leverage they had previously selected (for example 20x).
+	// Set leverage before order placement. A failure here must abort the open
+	// rather than place the order at whatever leverage the account previously
+	// had (which would defeat the configured safety leverage).
 	if err := t.SetLeverage(symbol, leverage); err != nil {
-		if !isXyz {
-			return nil, err
-		}
-		logger.Warnf("  ⚠ Failed to set leverage for xyz dex asset %s: %v", coin, err)
+		return nil, fmt.Errorf("failed to set leverage: %w", err)
 	}
 
 	// Get current price (for market order)
@@ -131,14 +128,11 @@ func (t *HyperliquidTrader) OpenShort(symbol string, quantity float64, leverage 
 	// Check if this is an xyz dex asset
 	isXyz := strings.HasPrefix(coin, "xyz:")
 
-	// Set leverage before order placement. Hyperliquid supports leverage
-	// updates for HIP-3/XYZ perps as well; skipping this left reused accounts
-	// at whatever leverage they had previously selected (for example 20x).
+	// Set leverage before order placement. A failure here must abort the open
+	// rather than place the order at whatever leverage the account previously
+	// had (which would defeat the configured safety leverage).
 	if err := t.SetLeverage(symbol, leverage); err != nil {
-		if !isXyz {
-			return nil, err
-		}
-		logger.Warnf("  ⚠ Failed to set leverage for xyz dex asset %s: %v", coin, err)
+		return nil, fmt.Errorf("failed to set leverage: %w", err)
 	}
 
 	// Get current price
@@ -597,6 +591,98 @@ func (t *HyperliquidTrader) cancelXyzOrder(oid int64) error {
 	return nil
 }
 
+// setXyzLeverage sets leverage for an xyz dex asset. The SDK's UpdateLeverage
+// resolves the asset via CoinToAsset from the core perp meta, which does NOT
+// contain xyz dex coins, so it would error and the caller would silently leave
+// the account at its prior leverage. Instead we build the UpdateLeverageAction
+// directly with the HIP-3 xyz asset index (mirroring placeXyzOrder) and
+// sign+POST it ourselves.
+func (t *HyperliquidTrader) setXyzLeverage(coin string, leverage int) error {
+	// Fetch xyz meta if not cached.
+	t.xyzMetaMutex.RLock()
+	hasMeta := t.xyzMeta != nil
+	t.xyzMetaMutex.RUnlock()
+
+	if !hasMeta {
+		if err := t.fetchXyzMeta(); err != nil {
+			return fmt.Errorf("failed to fetch xyz meta: %w", err)
+		}
+	}
+
+	metaIndex := t.getXyzAssetIndex(coin)
+	if metaIndex < 0 {
+		return fmt.Errorf("xyz asset %s not found in meta", coin)
+	}
+
+	assetIndex := xyzDexAssetIndex(metaIndex)
+
+	action := hyperliquid.UpdateLeverageAction{
+		Type:     "updateLeverage",
+		Asset:    assetIndex,
+		IsCross:  t.isCrossMargin,
+		Leverage: leverage,
+	}
+
+	// Sign the action.
+	nonce := time.Now().UnixMilli()
+	isMainnet := !t.isTestnet
+	vaultAddress := ""
+
+	sig, err := hyperliquid.SignL1Action(t.privateKey, action, vaultAddress, nonce, nil, isMainnet)
+	if err != nil {
+		return fmt.Errorf("failed to sign xyz dex leverage update: %w", err)
+	}
+
+	// Construct payload for /exchange endpoint.
+	payload := map[string]any{
+		"action":    action,
+		"nonce":     nonce,
+		"signature": sig,
+	}
+
+	apiURL := hyperliquid.MainnetAPIURL
+	if t.isTestnet {
+		apiURL = hyperliquid.TestnetAPIURL
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(t.ctx, http.MethodPost, apiURL+"/exchange", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// updateLeverage returns {"status":"ok","response":{"type":"default"}}.
+	var result struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return fmt.Errorf("xyz dex leverage update failed, status=%d, body=%s", resp.StatusCode, string(body))
+	}
+	if result.Status != "ok" {
+		return fmt.Errorf("xyz dex leverage update failed: status=%s, body=%s", result.Status, string(body))
+	}
+
+	logger.Infof("  ✓ %s leverage switched to %dx", coin, leverage)
+	return nil
+}
+
 // floatToWireStr converts a float to wire format string (8 decimal places, trimmed zeros)
 // This matches the SDK's floatToWire function
 func floatToWireStr(x float64) string {
@@ -631,11 +717,7 @@ func (t *HyperliquidTrader) placeXyzOrder(coin string, isBuy bool, size float64,
 		return fmt.Errorf("xyz asset %s not found in meta", coin)
 	}
 
-	// HIP-3 perp dex asset index formula: 100000 + perp_dex_index * 10000 + index_in_meta
-	// xyz dex is at perp_dex_index = 1 (verified from perpDexs API: [null, {name:"xyz",...}])
-	// So xyz asset index = 100000 + 1 * 10000 + metaIndex = 110000 + metaIndex
-	const xyzPerpDexIndex = 1
-	assetIndex := 100000 + xyzPerpDexIndex*10000 + metaIndex
+	assetIndex := xyzDexAssetIndex(metaIndex)
 
 	// Round size to correct precision
 	szDecimals := t.getXyzSzDecimals(coin)
@@ -794,10 +876,7 @@ func (t *HyperliquidTrader) placeXyzTriggerOrder(coin string, isBuy bool, size f
 		return fmt.Errorf("xyz asset %s not found in meta", coin)
 	}
 
-	// HIP-3 perp dex asset index formula: 100000 + perp_dex_index * 10000 + index_in_meta
-	// xyz dex is at perp_dex_index = 1
-	const xyzPerpDexIndex = 1
-	assetIndex := 100000 + xyzPerpDexIndex*10000 + metaIndex
+	assetIndex := xyzDexAssetIndex(metaIndex)
 
 	// Round size to correct precision
 	szDecimals := t.getXyzSzDecimals(coin)
@@ -1031,15 +1110,11 @@ func (t *HyperliquidTrader) SetTakeProfit(symbol string, positionSide string, qu
 func (t *HyperliquidTrader) PlaceLimitOrder(req *types.LimitOrderRequest) (*types.LimitOrderResult, error) {
 	coin := convertSymbolToHyperliquid(req.Symbol)
 
-	// Set leverage if specified.
-	isXyz := strings.HasPrefix(coin, "xyz:")
+	// Set leverage if specified. A failure here must abort the order rather
+	// than place it at whatever leverage the account previously had.
 	if req.Leverage > 0 {
 		if err := t.SetLeverage(req.Symbol, req.Leverage); err != nil {
-			if !isXyz {
-				logger.Warnf("[Hyperliquid] Failed to set leverage: %v", err)
-			} else {
-				logger.Warnf("[Hyperliquid] Failed to set xyz leverage for %s: %v", coin, err)
-			}
+			return nil, fmt.Errorf("failed to set leverage: %w", err)
 		}
 	}
 
