@@ -135,11 +135,11 @@ func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *S
 	userPrompt := engine.BuildUserPrompt(ctx)
 
 	// 4. Call AI API. Reasoning models intermittently burn their entire output
-// budget on `reasoning_content` and never emit a `content` delta, so the
-// stream/SSE parsers return empty content ("no content received"). That is a
-// transient, retryable failure — a retry usually takes the short-reasoning
-// path and succeeds. Only retry this specific empty-content case; other AI
-// errors (auth, rate-limit, 5xx) fail fast to avoid duplicate x402 payments.
+	// budget on `reasoning_content` and never emit a `content` delta, so the
+	// stream/SSE parsers return empty content ("no content received"). That is a
+	// transient, retryable failure — a retry usually takes the short-reasoning
+	// path and succeeds. Only retry this specific empty-content case; other AI
+	// errors (auth, rate-limit, 5xx) fail fast to avoid duplicate x402 payments.
 	var aiResponse string
 	var aiCallDuration time.Duration
 	var aiErr error
@@ -170,6 +170,7 @@ func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *S
 		riskConfig.AltcoinMaxLeverage,
 		riskConfig.BTCETHMaxPositionValueRatio,
 		riskConfig.AltcoinMaxPositionValueRatio,
+		riskConfig.RiskPerTradePct,
 	)
 
 	if decision != nil {
@@ -312,7 +313,7 @@ func pruneCandidateCoinsWithoutMarketData(ctx *Context) {
 // AI Response Parsing
 // ============================================================================
 
-func parseFullDecisionResponse(aiResponse string, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio float64) (*FullDecision, error) {
+func parseFullDecisionResponse(aiResponse string, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio float64, riskPerTradePct float64) (*FullDecision, error) {
 	cotTrace := extractCoTTrace(aiResponse)
 
 	decisions, err := extractDecisions(aiResponse)
@@ -323,7 +324,7 @@ func parseFullDecisionResponse(aiResponse string, accountEquity float64, btcEthL
 		}, fmt.Errorf("failed to extract decisions: %w", err)
 	}
 
-	if err := validateDecisions(decisions, accountEquity, btcEthLeverage, altcoinLeverage, btcEthPosRatio, altcoinPosRatio); err != nil {
+	if err := validateDecisions(decisions, accountEquity, btcEthLeverage, altcoinLeverage, btcEthPosRatio, altcoinPosRatio, riskPerTradePct); err != nil {
 		return &FullDecision{
 			CoTTrace:  cotTrace,
 			Decisions: decisions,

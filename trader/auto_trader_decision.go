@@ -17,6 +17,13 @@ func (at *AutoTrader) saveEquitySnapshot(ctx *kernel.Context) {
 		return
 	}
 
+	// Track account peak equity for the drawdown size-trim (#2).
+	at.peakPnLCacheMutex.Lock()
+	if at.peakEquity <= 0 || ctx.Account.TotalEquity > at.peakEquity {
+		at.peakEquity = ctx.Account.TotalEquity
+	}
+	at.peakPnLCacheMutex.Unlock()
+
 	snapshot := &store.EquitySnapshot{
 		TraderID:         at.id,
 		Timestamp:        time.Now().UTC(),

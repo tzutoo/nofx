@@ -12,24 +12,26 @@ import (
 
 // Hard limits to prevent token explosion in AI requests
 const (
-	MaxCandidateCoins = 10
-	MaxPositions      = 8
-	MaxTimeframes     = 4
-	MinKlineCount     = 10
-	MaxKlineCount     = 30
-	MinLeverage       = 1
-	MaxBTCETHLeverage = 20
-	MaxAltLeverage    = 20
-	MinPositionRatio  = 0.5
-	MaxPositionRatio  = 10.0
-	MinRiskReward     = 1.0
-	MaxRiskReward     = 10.0
-	MinMarginUsage    = 0.1
-	MaxMarginUsage    = 1.0
-	MinPositionSize   = 10.0
-	MaxPositionSize   = 1000.0
-	MinConfidence     = 50
-	MaxConfidence     = 100
+	MaxCandidateCoins  = 10
+	MaxPositions       = 8
+	MaxTimeframes      = 4
+	MinKlineCount      = 10
+	MaxKlineCount      = 30
+	MinLeverage        = 1
+	MaxBTCETHLeverage  = 20
+	MaxAltLeverage     = 20
+	MinPositionRatio   = 0.5
+	MaxPositionRatio   = 10.0
+	MinRiskReward      = 1.0
+	MaxRiskReward      = 10.0
+	MinMarginUsage     = 0.1
+	MaxMarginUsage     = 1.0
+	MinPositionSize    = 10.0
+	MaxPositionSize    = 1000.0
+	MinConfidence      = 50
+	MaxConfidence      = 100
+	MinRiskPerTradePct = 1.0
+	MaxRiskPerTradePct = 10.0
 )
 
 // ClampLimits enforces product-level limits on strategy config to prevent token overflow.
@@ -923,6 +925,9 @@ type RiskControlConfig struct {
 	// Altcoin single position max value = equity × this ratio (CODE ENFORCED, default: 1)
 	AltcoinMaxPositionValueRatio float64 `json:"altcoin_max_position_value_ratio"`
 
+	// Max % of account equity a single position may lose at its stop (CODE ENFORCED, default: 3)
+	RiskPerTradePct float64 `json:"risk_per_trade_pct"`
+
 	// Max margin utilization (e.g. 0.9 = 90%) (CODE ENFORCED)
 	MaxMarginUsage float64 `json:"max_margin_usage"`
 	// Min position size in USDT (CODE ENFORCED)
@@ -1021,6 +1026,7 @@ func GetDefaultStrategyConfig(lang string) StrategyConfig {
 			AltcoinMaxPositionValueRatio: 1.0, // Per-position notional = equity × 1; 2 positions = 2x total (~33% liquidation cushion at 3x)
 			MaxMarginUsage:               0.5, // Cap margin at ~half of equity to leave a buffer
 			MinPositionSize:              12,  // Min 12 USDT per position (CODE ENFORCED)
+			RiskPerTradePct:              3.0, // Cap stop-out loss at 3%% of equity per position (CODE ENFORCED)
 			MinRiskRewardRatio:           3.0, // Min 3:1 profit/loss ratio (AI guided)
 			MinConfidence:                78,  // Min 78% confidence (AI guided)
 		},

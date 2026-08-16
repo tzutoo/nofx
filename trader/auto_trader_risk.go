@@ -17,6 +17,13 @@ const (
 	// closes if the position gives back 40% of its peak profit.
 	drawdownClosePriceGainPct = 5.0
 	drawdownCloseGivebackPct  = 40.0
+
+	// Drawdown size-trim (#2): as equity falls from its account peak, shrink the
+	// position-value multiplier so a losing streak risks progressively less.
+	drawdownTrimPct        = 15.0 // at/above 15% below peak -> 0.5x
+	drawdownTrimDeepPct    = 30.0 // at/above 30% below peak -> 0.25x
+	drawdownTrimScalar     = 0.50
+	drawdownTrimDeepScalar = 0.25
 )
 
 // shouldDrawdownClose reports whether the profit-protection close should fire.
@@ -219,6 +226,39 @@ func isMajorAsset(symbol string) bool {
 	return market.IsXyzDexAsset(symbol)
 }
 
+// riskPerTradePct returns the max %% of equity a single position may lose at its
+// stop (from StrategyConfig, default 3.0).
+func (at *AutoTrader) riskPerTradePct() float64 {
+	if at.config.StrategyConfig != nil && at.config.StrategyConfig.RiskControl.RiskPerTradePct > 0 {
+		return at.config.StrategyConfig.RiskControl.RiskPerTradePct
+	}
+	return 3.0
+}
+
+// riskScaleForDrawdown returns a size multiplier (1.0, 0.5, 0.25) based on how
+// far current equity is below the tracked account peak, so a losing streak
+// progressively shrinks position exposure. Direction-agnostic (whole account).
+func (at *AutoTrader) riskScaleForDrawdown(equity float64) float64 {
+	at.peakPnLCacheMutex.RLock()
+	peak := at.peakEquity
+	at.peakPnLCacheMutex.RUnlock()
+	if peak <= 0 {
+		return 1.0
+	}
+	dd := (peak - equity) / peak
+	if dd <= 0 {
+		return 1.0
+	}
+	switch {
+	case dd > drawdownTrimDeepPct/100.0:
+		return drawdownTrimDeepScalar
+	case dd > drawdownTrimPct/100.0:
+		return drawdownTrimScalar
+	default:
+		return 1.0
+	}
+}
+
 // enforcePositionValueRatio checks and enforces position value ratio limits (CODE ENFORCED)
 // Returns the adjusted position size (capped if necessary) and whether the position was capped
 // positionSizeUSD: the original position size in USD
@@ -247,8 +287,8 @@ func (at *AutoTrader) enforcePositionValueRatio(positionSizeUSD float64, equity 
 		}
 	}
 
-	// Calculate max allowed position value = equity × ratio
-	maxPositionValue := equity * maxPositionValueRatio
+	// Calculate max allowed position value = equity × ratio (× drawdown size-trim)
+	maxPositionValue := equity * maxPositionValueRatio * at.riskScaleForDrawdown(equity)
 
 	// Check if position size exceeds limit
 	if positionSizeUSD > maxPositionValue {
@@ -290,6 +330,20 @@ func (at *AutoTrader) applyAutopilotFullSizeOpen(decision *kernel.Decision, equi
 	fullPositionSize := equity * positionValueRatio
 	if fullPositionSize <= 0 {
 		return
+	}
+
+	// #1 risk cap: bound notional so a stop-out loses at most RiskPerTradePct%% of
+	// equity (long and short both covered via the price-move stop distance).
+	if decision.StopLoss > 0 && decision.TakeProfit > 0 {
+		var entry float64
+		if decision.Action == "open_long" {
+			entry = decision.StopLoss + (decision.TakeProfit-decision.StopLoss)*0.2
+		} else {
+			entry = decision.StopLoss - (decision.StopLoss-decision.TakeProfit)*0.2
+		}
+		if capped := kernel.RiskCappedPositionSize(equity, entry, decision.StopLoss, decision.Action == "open_long", at.riskPerTradePct(), fullPositionSize); capped < fullPositionSize {
+			fullPositionSize = capped
+		}
 	}
 
 	if decision.Leverage != leverage || decision.PositionSizeUSD != fullPositionSize {
