@@ -19,6 +19,7 @@ import { ExecutionLog } from './ExecutionLog'
 import { SignalMatrix } from './SignalMatrix'
 import { RiskRadar } from './RiskRadar'
 import { EdgeProfile } from './EdgeProfile'
+import { VERGEX_TERMINAL_REFRESH_MS } from './constants'
 import { useDemoEngine } from '../../lib/demo/useDemoEngine'
 
 // crypto majors trade on the Hyperliquid main dex (no hip3 cost/liq heatmap);
@@ -187,15 +188,15 @@ export function TerminalDashboard({
   const { data: realFlow } = useSWR(
     traderId ? ['flow-markets', traderId] : null,
     () => api.getFlowMarkets(selectedTrader?.ai_model, 'mainnet', '1h', 50, true),
-    // paid x402 endpoint — poll slowly (5m) to conserve claw402 funds; the
-    // topology beam animation is client-side and stays fast regardless
-    { refreshInterval: 300000, shouldRetryOnError: false }
+    // self-hosted signal service — refresh aligns to SIGNAL_SERVICE_INTERVAL (3m);
+    // the topology beam animation is client-side and stays fast regardless
+    { refreshInterval: VERGEX_TERMINAL_REFRESH_MS, shouldRetryOnError: false }
   )
   const { data: realSignalRank } = useSWR(
     traderId ? ['signal-rank', traderId] : null,
     () => api.getSignalRanking(selectedTrader?.ai_model, 'mainnet', 'all', 30, true),
-    // paid x402 endpoint — poll slowly (5m) to conserve claw402 funds
-    { refreshInterval: 300000, shouldRetryOnError: false }
+    // self-hosted signal service — refresh aligns to SIGNAL_SERVICE_INTERVAL (3m)
+    { refreshInterval: VERGEX_TERMINAL_REFRESH_MS, shouldRetryOnError: false }
   )
 
   // Demo / showcase mode for product walkthroughs. Toggle with Shift+D (or the

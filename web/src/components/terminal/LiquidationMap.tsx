@@ -3,6 +3,7 @@ import useSWR from 'swr'
 import { api } from '../../lib/api'
 import type { VergexHeatmapBin } from '../../lib/api/data'
 import { demoSeedPrice, demoTick } from '../../lib/demo/demoUniverse'
+import { VERGEX_TERMINAL_REFRESH_MS } from './constants'
 
 const lmRnd = (a: number, b: number) => a + Math.random() * (b - a)
 
@@ -12,8 +13,8 @@ const lmRnd = (a: number, b: number) => a + Math.random() * (b - a)
  * price level. Long metrics diverge right, short metrics diverge left from the
  * mark price. Cream-themed adaptation of a Bloomberg-style liquidation map.
  *
- * Real paid data only (hip3_perp synthetic markets). Polled at 5 min to spare
- * the claw402 wallet.
+ * Served by the free self-hosted signal service; refresh aligned to its 3m
+ * ingest interval (SIGNAL_SERVICE_INTERVAL).
  */
 
 const C_LONG_COST = 'var(--tm-up)' // forest green
@@ -57,7 +58,7 @@ export function LiquidationMap({ symbol, marketType = 'hip3_perp', height = 460,
   // heatmap resolves for ANY symbol that has one.
   const fetcher = (mt: string) =>
     api.getVergexCostLiquidationHeatmap({ marketType: mt, symbol, chain: 'mainnet', liqBand: '15' })
-  const opts = { refreshInterval: 300000, revalidateOnFocus: false, keepPreviousData: true }
+  const opts = { refreshInterval: VERGEX_TERMINAL_REFRESH_MS, revalidateOnFocus: false, keepPreviousData: true }
 
   const primary = useSWR(symbol && !demo ? ['heatmap', marketType, symbol] : null, () => fetcher(marketType), opts)
   const primaryHasBins = !!primary.data?.data?.bins?.length
