@@ -616,10 +616,14 @@ func (t *HyperliquidTrader) setXyzLeverage(coin string, leverage int) error {
 
 	assetIndex := xyzDexAssetIndex(metaIndex)
 
+	// xyz dex equities (US stocks, etc.) are isolated-margin-only on Hyperliquid:
+	// sending IsCross=true (the core-perp cross-margin default) is rejected with
+	// "Cross margin is not allowed for this asset." So the xyz path always uses
+	// isolated margin, independent of the core-perp cross-margin setting.
 	action := hyperliquid.UpdateLeverageAction{
 		Type:     "updateLeverage",
 		Asset:    assetIndex,
-		IsCross:  t.isCrossMargin,
+		IsCross:  false,
 		Leverage: leverage,
 	}
 
