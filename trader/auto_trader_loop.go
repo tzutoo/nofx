@@ -294,6 +294,16 @@ func (at *AutoTrader) runCycle() error {
 	// Execute decisions and record results. Trade throttle is applied here,
 	// immediately before order placement, so AI churn cannot become live orders.
 	opensAllowedThisCycle := 0
+
+	// Symbols being closed this cycle: excluded from the correlation block, since
+	// they will not remain open alongside a new correlated entry.
+	closingSymbols := map[string]bool{}
+	for _, d := range sortedDecisions {
+		if isCloseAction(d.Action) {
+			closingSymbols[normalizedDecisionSymbol(d.Symbol)] = true
+		}
+	}
+
 	for _, d := range sortedDecisions {
 		// Check if trader is stopped before each decision (allow immediate stop during execution)
 		at.isRunningMutex.RLock()
@@ -319,6 +329,13 @@ func (at *AutoTrader) runCycle() error {
 		}
 
 		if reason := at.tradeThrottleReason(d, ctx, opensAllowedThisCycle); reason != "" {
+			at.logWarnf("🧊 %s %s blocked: %s", d.Symbol, d.Action, reason)
+			actionRecord.Error = reason
+			record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("🧊 %s %s blocked: %s", d.Symbol, d.Action, reason))
+			record.Decisions = append(record.Decisions, actionRecord)
+			continue
+		}
+		if reason := at.correlationBlockReason(d, ctx, closingSymbols); reason != "" {
 			at.logWarnf("🧊 %s %s blocked: %s", d.Symbol, d.Action, reason)
 			actionRecord.Error = reason
 			record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("🧊 %s %s blocked: %s", d.Symbol, d.Action, reason))

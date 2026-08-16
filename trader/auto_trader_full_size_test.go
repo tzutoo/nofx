@@ -57,6 +57,43 @@ func TestApplyAutopilotRiskCapsWideStop(t *testing.T) {
 	}
 }
 
+// TestCorrelationBlockDisabledAndNonOpen verifies the correlation block is a
+// no-op when disabled (threshold <= 0) or the action is not an open.
+func TestCorrelationBlockDisabledAndNonOpen(t *testing.T) {
+	cfg := store.GetDefaultStrategyConfig("en")
+	cfg.RiskControl.CorrelationBlockThreshold = -1 // disabled
+	at := &AutoTrader{config: AutoTraderConfig{StrategyConfig: &cfg}}
+	if got := at.correlationThreshold(); got != 0 {
+		t.Fatalf("disabled threshold = %v, want 0", got)
+	}
+	ctx := &kernel.Context{Positions: []kernel.PositionInfo{{Symbol: "xyz:NVDA", Side: "long"}}}
+	if reason := at.correlationBlockReason(kernel.Decision{Symbol: "xyz:TSLA", Action: "open_long"}, ctx, nil); reason != "" {
+		t.Fatalf("disabled should not block, got %q", reason)
+	}
+
+	cfg2 := store.GetDefaultStrategyConfig("en")
+	at2 := &AutoTrader{config: AutoTraderConfig{StrategyConfig: &cfg2}}
+	if reason := at2.correlationBlockReason(kernel.Decision{Symbol: "xyz:TSLA", Action: "hold"}, ctx, nil); reason != "" {
+		t.Fatalf("non-open action should not block, got %q", reason)
+	}
+}
+
+// TestCorrelationBlockSkipsClosingAndSelf verifies the block skips positions that
+// are the same symbol or are being closed this cycle (no network correlation
+// lookups are made), so it returns empty deterministically.
+func TestCorrelationBlockSkipsClosingAndSelf(t *testing.T) {
+	cfg := store.GetDefaultStrategyConfig("en") // default threshold 0.7
+	at := &AutoTrader{config: AutoTraderConfig{StrategyConfig: &cfg}}
+	ctx := &kernel.Context{Positions: []kernel.PositionInfo{
+		{Symbol: "xyz:TSLA", Side: "long"}, // same as candidate -> skipped
+		{Symbol: "xyz:NVDA", Side: "long"}, // being closed -> skipped
+	}}
+	closing := map[string]bool{"xyz:NVDA": true}
+	if reason := at.correlationBlockReason(kernel.Decision{Symbol: "xyz:TSLA", Action: "open_long"}, ctx, closing); reason != "" {
+		t.Fatalf("expected no block when comparable positions are self/closing, got %q", reason)
+	}
+}
+
 // TestRiskScaleForDrawdown verifies the account-level drawdown size-trim (#2):
 // full size near peak, halved past 15%%, quartered past 30%% below peak.
 func TestRiskScaleForDrawdown(t *testing.T) {

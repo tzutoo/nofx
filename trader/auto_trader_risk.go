@@ -235,6 +235,64 @@ func (at *AutoTrader) riskPerTradePct() float64 {
 	return 3.0
 }
 
+// correlationThreshold returns the same-theme/correlation block threshold from
+// StrategyConfig (default 0.7). A negative value disables the block; 0 means
+// "unset -> use the 0.7 default" (so existing strategies get the protection);
+// a positive value is used as-is.
+func (at *AutoTrader) correlationThreshold() float64 {
+	if at.config.StrategyConfig == nil {
+		return 0.7
+	}
+	t := at.config.StrategyConfig.RiskControl.CorrelationBlockThreshold
+	switch {
+	case t < 0:
+		return 0 // disabled
+	case t == 0:
+		return 0.7 // unset -> default
+	default:
+		return t
+	}
+}
+
+// correlationBlockReason reports why an open should be blocked for correlation:
+// the candidate moves in lockstep (>= threshold) with an already-held position
+// that will remain open this cycle. It fails open: if correlation data is
+// unavailable or sparse, the open is allowed. Works for long and short (the
+// block targets same-direction co-movement, which is the concentration risk).
+// closing is the set of symbols being closed this cycle (excluded, since they
+// will not remain open).
+func (at *AutoTrader) correlationBlockReason(d kernel.Decision, ctx *kernel.Context, closing map[string]bool) string {
+	if ctx == nil || !isOpenAction(d.Action) {
+		return ""
+	}
+	threshold := at.correlationThreshold()
+	if threshold <= 0 {
+		return ""
+	}
+	cand := normalizedDecisionSymbol(d.Symbol)
+	if cand == "" {
+		return ""
+	}
+	const (
+		timeframe = "1d"
+		lookback  = 30 * 24 * time.Hour
+	)
+	for _, pos := range ctx.Positions {
+		sym := normalizedDecisionSymbol(pos.Symbol)
+		if sym == "" || sym == cand || closing[sym] {
+			continue
+		}
+		corr, ok, err := market.SymbolPairCorrelation(cand, sym, timeframe, lookback)
+		if err != nil || !ok {
+			continue // fail-open on insufficient/error data
+		}
+		if corr >= threshold {
+			return fmt.Sprintf("correlation block: %s is %.0f%% correlated with held %s (threshold %.0f%%)", cand, corr*100, pos.Symbol, threshold*100)
+		}
+	}
+	return ""
+}
+
 // riskScaleForDrawdown returns a size multiplier (1.0, 0.5, 0.25) based on how
 // far current equity is below the tracked account peak, so a losing streak
 // progressively shrinks position exposure. Direction-agnostic (whole account).

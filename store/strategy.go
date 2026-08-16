@@ -32,6 +32,8 @@ const (
 	MaxConfidence      = 100
 	MinRiskPerTradePct = 1.0
 	MaxRiskPerTradePct = 10.0
+	MinCorrBlock       = 0.30
+	MaxCorrBlock       = 0.99
 )
 
 // ClampLimits enforces product-level limits on strategy config to prevent token overflow.
@@ -107,6 +109,21 @@ func (c *StrategyConfig) ClampLimits() {
 	}
 	if c.RiskControl.AltcoinMaxPositionValueRatio > MaxPositionRatio {
 		c.RiskControl.AltcoinMaxPositionValueRatio = MaxPositionRatio
+	}
+
+	// Clamp risk per trade (%% of equity) to sane bounds.
+	if c.RiskControl.RiskPerTradePct < MinRiskPerTradePct {
+		c.RiskControl.RiskPerTradePct = MinRiskPerTradePct
+	}
+	if c.RiskControl.RiskPerTradePct > MaxRiskPerTradePct {
+		c.RiskControl.RiskPerTradePct = MaxRiskPerTradePct
+	}
+	// Clamp the correlation-block threshold; <=0 keeps it disabled.
+	if c.RiskControl.CorrelationBlockThreshold > 0 && c.RiskControl.CorrelationBlockThreshold < MinCorrBlock {
+		c.RiskControl.CorrelationBlockThreshold = MinCorrBlock
+	}
+	if c.RiskControl.CorrelationBlockThreshold > MaxCorrBlock {
+		c.RiskControl.CorrelationBlockThreshold = MaxCorrBlock
 	}
 
 	// Clamp risk parameters and entry requirements.
@@ -928,6 +945,11 @@ type RiskControlConfig struct {
 	// Max % of account equity a single position may lose at its stop (CODE ENFORCED, default: 3)
 	RiskPerTradePct float64 `json:"risk_per_trade_pct"`
 
+	// Same-theme/correlation block: if a new open is at least this correlated
+	// with an already-held position (0..1), it is blocked. Negative disables;
+	// 0 = default 0.7. (CODE ENFORCED, default: 0.7)
+	CorrelationBlockThreshold float64 `json:"correlation_block_threshold"`
+
 	// Max margin utilization (e.g. 0.9 = 90%) (CODE ENFORCED)
 	MaxMarginUsage float64 `json:"max_margin_usage"`
 	// Min position size in USDT (CODE ENFORCED)
@@ -1027,6 +1049,7 @@ func GetDefaultStrategyConfig(lang string) StrategyConfig {
 			MaxMarginUsage:               0.5, // Cap margin at ~half of equity to leave a buffer
 			MinPositionSize:              12,  // Min 12 USDT per position (CODE ENFORCED)
 			RiskPerTradePct:              3.0, // Cap stop-out loss at 3%% of equity per position (CODE ENFORCED)
+			CorrelationBlockThreshold:    0.7, // Block an open too correlated with a held position (0.7 = 70%%)
 			MinRiskRewardRatio:           3.0, // Min 3:1 profit/loss ratio (AI guided)
 			MinConfidence:                78,  // Min 78% confidence (AI guided)
 		},
