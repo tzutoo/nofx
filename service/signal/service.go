@@ -217,6 +217,14 @@ func (s *Service) carryForward(prev, next map[string]*asset) {
 	}
 }
 
+// tradableSnapshot reports whether a market snapshot is live and tradeable. A
+// delisted asset (Hyperliquid isDelisted flag) or one with no valid mark price
+// would otherwise surface as a degenerate rank / heatmap / empty-dashboard
+// entry, so both are excluded.
+func tradableSnapshot(m hyperliquid.MarketSnapshot) bool {
+	return !m.IsDelisted && m.MarkPx > 0
+}
+
 // ingestDex fetches one Hyperliquid dex and adds assets to the map, tagging
 // market type and category.
 func (s *Service) ingestDex(ctx context.Context, dex, marketType string, assets map[string]*asset) error {
@@ -226,6 +234,12 @@ func (s *Service) ingestDex(ctx context.Context, dex, marketType string, assets 
 	}
 	for _, m := range snap {
 		symbol := m.Symbol
+		if !tradableSnapshot(m) {
+			// Delisted / no live market reports a zero mark price; skip it so it
+			// never enters the snapshot, rank, or terminal (e.g. a delisted coin
+			// with no order book, kline, or heatmap).
+			continue
+		}
 		category := "crypto"
 		if marketType == "hip3_perp" {
 			base := strings.TrimPrefix(symbol, "xyz:")

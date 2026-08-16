@@ -79,6 +79,7 @@ type metaResponse struct {
 		Name        string `json:"name"`
 		SzDecimals  int    `json:"szDecimals"`
 		MaxLeverage int    `json:"maxLeverage"`
+		IsDelisted  bool   `json:"isDelisted"`
 	} `json:"universe"`
 }
 
@@ -105,6 +106,7 @@ type MarketSnapshot struct {
 	OraclePx     float64 `json:"oracle_px,omitempty"`
 	MaxLeverage  int     `json:"max_leverage,omitempty"`
 	SzDecimals   int     `json:"sz_decimals,omitempty"`
+	IsDelisted   bool    `json:"is_delisted,omitempty"`
 }
 
 // GetMarketSnapshot fetches the richer per-asset cross-section (mark, 24h ref,
@@ -156,6 +158,7 @@ func GetMarketSnapshot(ctx context.Context, client *http.Client, dex string) ([]
 			Symbol:      u.Name,
 			MaxLeverage: u.MaxLeverage,
 			SzDecimals:  u.SzDecimals,
+			IsDelisted:  u.IsDelisted,
 		}
 		if i < len(ctxs) {
 			item.MarkPx, _ = strconv.ParseFloat(ctxs[i].MarkPx, 64)
