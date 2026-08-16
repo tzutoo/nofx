@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import type { Position } from '../../types'
 
 /**
@@ -135,54 +135,58 @@ export function RiskRadar({ positions, account, config, fullStats }: RiskRadarPr
   const biasSkew = m.longShare - m.shortShare
   const exposureTag: Verdict =
     m.totalNotional === 0
-      ? { text: 'Flat', tone: 'muted' }
+      ? { text: 'Flat', tone: 'muted', title: 'No positions — net exposure is flat.' }
       : biasSkew > 15
-        ? { text: 'Long-lean', tone: 'up' }
+        ? { text: 'Long-lean', tone: 'up', title: 'Long share exceeds short by >15pts.' }
         : biasSkew < -15
-          ? { text: 'Short-lean', tone: 'dn' }
-          : { text: 'Balanced', tone: 'ink' }
+          ? { text: 'Short-lean', tone: 'dn', title: 'Short share exceeds long by >15pts.' }
+          : { text: 'Balanced', tone: 'ink', title: 'Long/short shares within 15pts.' }
 
-  // Leverage: Safe / High / Risky by avg vs cap.
+  // Leverage: info-only — leverage is pinned to the cap by design, so it carries
+  // no risk color (the Margin Used row owns risk color). Flag 'At cap' when the
+  // average is at the cap so the user sees there is no leverage headroom.
+  const atCap = m.configMax > 0 && m.avgLev > 0 && m.avgLev >= m.configMax - 0.5
   const levTag: Verdict =
     m.configMax === 0 || m.avgLev === 0
-      ? { text: '—', tone: 'muted' }
-      : m.levUse > 80
-        ? { text: 'Risky', tone: 'dn' }
-        : m.levUse >= 50
-          ? { text: 'High', tone: 'amber' }
-          : { text: 'Safe', tone: 'up' }
+      ? { text: '—', tone: 'muted', title: 'Info only; no positions.' }
+      : atCap
+        ? { text: 'At cap', tone: 'amber', title: "Info only — avg leverage equals the cap (no headroom). Risk color lives in Margin Used." }
+        : { text: 'Below cap', tone: 'muted', title: 'Info only — avg leverage below the cap.' }
 
   // Margin used: Ample / Tight / Risky.
   const marginTag: Verdict =
     m.marginPct > 80
-      ? { text: 'Risky', tone: 'dn' }
+      ? { text: 'Risky', tone: 'dn', title: 'Margin >80% of equity.' }
       : m.marginPct >= 50
-        ? { text: 'Tight', tone: 'amber' }
-        : { text: 'Ample', tone: 'up' }
+        ? { text: 'Tight', tone: 'amber', title: 'Margin 50–80% of equity.' }
+        : { text: 'Ample', tone: 'up', title: 'Margin <50% of equity.' }
 
-  // Concentration: Spread / Concentrated.
+  // Concentration: Spread / Concentrated. With MaxPositions=2 the minimum
+  // concentration is 50% (two balanced positions), so 'Concentrated' is reserved
+  // for a dominant single position (>70%) or exactly one position.
   const concTag: Verdict =
     m.totalNotional === 0
-      ? { text: '—', tone: 'muted' }
-      : m.concentration >= 35
-        ? { text: 'Concentrated', tone: 'amber' }
-        : { text: 'Spread', tone: 'up' }
+      ? { text: '—', tone: 'muted', title: 'No positions held.' }
+      : m.concentration > 70 || m.count === 1
+        ? { text: 'Concentrated', tone: 'amber', title: '>70% of total notional, or only 1 position held.' }
+        : { text: 'Spread', tone: 'up', title: '≤70% of total notional across ≥2 positions.' }
 
-  // Drawdown: Calm / Caution / Deep by depth.
+  // Drawdown: historical max drawdown (positive %). Calm <5%, Caution 5-20%,
+  // Deep >20%. Framed as a historical-magnitude stat, not a live alarm.
   const ddTag: Verdict =
-    m.drawdown <= 0
-      ? { text: 'Calm', tone: 'up' }
+    m.drawdown <= 5
+      ? { text: 'Calm', tone: 'up', title: 'Historical max drawdown <5%.' }
       : m.drawdown >= 20
-        ? { text: 'Deep', tone: 'dn' }
-        : { text: 'Caution', tone: 'amber' }
+        ? { text: 'Deep', tone: 'dn', title: 'Historical max drawdown ≥20%.' }
+        : { text: 'Caution', tone: 'amber', title: 'Historical max drawdown 5–20%.' }
 
   // Positions: Room / Full.
   const countTag: Verdict =
     m.maxPositions === 0
-      ? { text: `${m.count}`, tone: 'muted' }
+      ? { text: `${m.count}`, tone: 'muted', title: `${m.count} positions; no cap configured.` }
       : m.count >= m.maxPositions
-        ? { text: 'Full', tone: 'amber' }
-        : { text: 'Room', tone: 'up' }
+        ? { text: 'Full', tone: 'amber', title: 'Positions at/above the cap.' }
+        : { text: 'Room', tone: 'up', title: 'Positions below the cap.' }
 
   return (
     <div style={{ fontFamily: 'var(--tm-mono)' }}>
@@ -231,7 +235,7 @@ export function RiskRadar({ positions, account, config, fullStats }: RiskRadarPr
         value={`${m.avgLev.toFixed(1)}× avg`}
         sub={`/ ${m.maxLev > 0 ? `${m.maxLev.toFixed(0)}×` : '—'} peak · ${m.configMax > 0 ? `${m.configMax}×` : '—'} cap`}
         fill={m.levUse}
-        color={levTag.tone === 'dn' ? 'var(--tm-dn)' : levTag.tone === 'amber' ? C_AMBER : 'var(--tm-up)'}
+        color="var(--tm-muted)" // info-only; risk color lives in the Margin Used row
         verdict={levTag}
       />
       <GaugeRow
@@ -300,6 +304,7 @@ type Tone = 'up' | 'dn' | 'amber' | 'ink' | 'muted'
 interface Verdict {
   text: string
   tone: Tone
+  title?: string
 }
 
 function toneColor(tone: Tone): string {
@@ -319,9 +324,12 @@ function toneColor(tone: Tone): string {
 
 function Tag({ verdict }: { verdict: Verdict }) {
   const c = toneColor(verdict.tone)
+  const [open, setOpen] = useState(false)
   return (
     <span
       style={{
+        position: 'relative',
+        display: 'inline-block',
         marginLeft: 6,
         padding: '0 4px',
         fontSize: 9,
@@ -330,9 +338,36 @@ function Tag({ verdict }: { verdict: Verdict }) {
         color: c,
         border: `1px solid ${c}`,
         borderRadius: 2,
+        cursor: verdict.title ? 'help' : 'default',
       }}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
     >
       {verdict.text}
+      {open && verdict.title && (
+        <span
+          style={{
+            position: 'absolute',
+            bottom: '100%',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            marginBottom: 4,
+            padding: '4px 7px',
+            fontSize: 10,
+            lineHeight: '14px',
+            whiteSpace: 'nowrap',
+            color: '#f0f0f0',
+            background: '#2a2a2a',
+            border: '1px solid #5a5a5a',
+            borderRadius: 3,
+            zIndex: 30,
+            pointerEvents: 'none',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.6)',
+          }}
+        >
+          {verdict.title}
+        </span>
+      )}
     </span>
   )
 }
