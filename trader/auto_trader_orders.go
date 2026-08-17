@@ -109,8 +109,11 @@ func (at *AutoTrader) fetchATR14(symbol string) float64 {
 }
 
 // positionKey returns the canonical position key (symbol_side, side lowercased).
+// The symbol is normalized to its bare base (e.g. "PUMPUSDT", "xyz:PUMP", and
+// "PUMP" all become "PUMP") so the open path and the position-monitor path agree
+// on the same key regardless of quote-suffix or prefix differences.
 func positionKey(symbol, side string) string {
-	return symbol + "_" + strings.ToLower(side)
+	return universeBaseKey(symbol) + "_" + strings.ToLower(side)
 }
 
 // moveTrailingStopLoss re-places the stop-loss (ratcheted up) and re-places the

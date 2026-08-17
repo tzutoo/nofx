@@ -40,3 +40,23 @@ func TestDrawdownArmPct(t *testing.T) {
 		t.Fatalf("drawdownArmPct(0, 0) = %.2f, want 1.5 (fallback)", got)
 	}
 }
+
+// TestPositionKeyNormalizesSymbol locks in the fix for the open-path vs monitor
+// symbol mismatch: bare base ("PUMP") and full pair ("PUMPUSDT") must map to the
+// same position key so trailing-stop state and exit detection stay consistent.
+func TestPositionKeyNormalizesSymbol(t *testing.T) {
+	cases := [][3]string{
+		{"PUMP", "LONG", "PUMP_long"},
+		{"PUMPUSDT", "long", "PUMP_long"},
+		{"xyz:PUMP", "LONG", "PUMP_long"},
+		{"HEMIUSDT", "short", "HEMI_short"},
+		{"pumpusdt", "LONG", "PUMP_long"},
+		{"XAI", "LONG", "XAI_long"},
+		{"XAIUSDT", "LONG", "XAI_long"},
+	}
+	for _, c := range cases {
+		if got := positionKey(c[0], c[1]); got != c[2] {
+			t.Fatalf("positionKey(%q, %q) = %q, want %q", c[0], c[1], got, c[2])
+		}
+	}
+}
