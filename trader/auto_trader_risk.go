@@ -392,6 +392,10 @@ func (at *AutoTrader) applyAutopilotFullSizeOpen(decision *kernel.Decision, equi
 
 	// #1 risk cap: bound notional so a stop-out loses at most RiskPerTradePct%% of
 	// equity (long and short both covered via the price-move stop distance).
+	// This gate is gated on SL/TP being present because the force-time call (in
+	// ensureLongShortCoverage) has no stop yet; the execution-time re-size in
+	// executeOpen* now fills the ATR stop BEFORE this runs, so forced opens do
+	// get the risk cap at execution.
 	if decision.StopLoss > 0 && decision.TakeProfit > 0 {
 		var entry float64
 		if decision.Action == "open_long" {

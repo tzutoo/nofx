@@ -109,6 +109,7 @@ func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *S
 		}
 	}
 	pruneCandidateCoinsWithoutMarketData(ctx)
+	filterCandidatesByATRCap(ctx, engine)
 	enrichVergexDataWithStrategy(ctx, engine)
 
 	// Ensure OITopDataMap is initialized
@@ -171,6 +172,7 @@ func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *S
 		riskConfig.BTCETHMaxPositionValueRatio,
 		riskConfig.AltcoinMaxPositionValueRatio,
 		riskConfig.RiskPerTradePct,
+		riskConfig.MinRiskRewardRatio,
 	)
 
 	if decision != nil {
@@ -309,11 +311,50 @@ func pruneCandidateCoinsWithoutMarketData(ctx *Context) {
 	ctx.CandidateCoins = kept
 }
 
+// filterCandidatesByATRCap hard-excludes candidates whose ATR%/price on the
+// eligibility timeframe exceeds RiskControl.ATREligibilityCapPct. Scoped to the
+// 15m scalp pool (skipped when cap<=0, tf empty, or PrimaryTimeframe != "15m").
+// Never filters held positions. Fail-open: a candidate with missing ATR is
+// admitted (with a log) so a transient fetch gap never silently empties the pool.
+func filterCandidatesByATRCap(ctx *Context, engine *StrategyEngine) {
+	if ctx == nil || engine == nil {
+		return
+	}
+	cfg := engine.GetConfig()
+	capPct := cfg.RiskControl.ATREligibilityCapPct
+	tf := cfg.RiskControl.ATREligibilityTimeframe
+	if capPct <= 0 || strings.TrimSpace(tf) == "" || cfg.Indicators.Klines.PrimaryTimeframe != "15m" {
+		return
+	}
+	kept := make([]CandidateCoin, 0, len(ctx.CandidateCoins))
+	for _, coin := range ctx.CandidateCoins {
+		d := ctx.MarketDataMap[coin.Symbol]
+		if d == nil || d.TimeframeData == nil || d.TimeframeData[tf] == nil {
+			logger.Infof("⚠️ ATR cap skipped for %s: no %s ATR", coin.Symbol, tf)
+			kept = append(kept, coin)
+			continue
+		}
+		atr14 := d.TimeframeData[tf].ATR14
+		if atr14 <= 0 || d.CurrentPrice <= 0 {
+			logger.Infof("⚠️ ATR cap skipped for %s: invalid ATR/price", coin.Symbol)
+			kept = append(kept, coin)
+			continue
+		}
+		atrPct := atr14 / d.CurrentPrice * 100
+		if atrPct > capPct {
+			logger.Infof("🚫 Excluded coin %s: %s ATR %.2f%% > cap %.2f%%", coin.Symbol, tf, atrPct, capPct)
+			continue
+		}
+		kept = append(kept, coin)
+	}
+	ctx.CandidateCoins = kept
+}
+
 // ============================================================================
 // AI Response Parsing
 // ============================================================================
 
-func parseFullDecisionResponse(aiResponse string, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio float64, riskPerTradePct float64) (*FullDecision, error) {
+func parseFullDecisionResponse(aiResponse string, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio float64, riskPerTradePct, minRiskRewardRatio float64) (*FullDecision, error) {
 	cotTrace := extractCoTTrace(aiResponse)
 
 	decisions, err := extractDecisions(aiResponse)
@@ -324,7 +365,7 @@ func parseFullDecisionResponse(aiResponse string, accountEquity float64, btcEthL
 		}, fmt.Errorf("failed to extract decisions: %w", err)
 	}
 
-	if err := validateDecisions(decisions, accountEquity, btcEthLeverage, altcoinLeverage, btcEthPosRatio, altcoinPosRatio, riskPerTradePct); err != nil {
+	if err := validateDecisions(decisions, accountEquity, btcEthLeverage, altcoinLeverage, btcEthPosRatio, altcoinPosRatio, riskPerTradePct, minRiskRewardRatio); err != nil {
 		return &FullDecision{
 			CoTTrace:  cotTrace,
 			Decisions: decisions,

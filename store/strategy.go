@@ -12,28 +12,34 @@ import (
 
 // Hard limits to prevent token explosion in AI requests
 const (
-	MaxCandidateCoins  = 10
-	MaxPositions       = 8
-	MaxTimeframes      = 4
-	MinKlineCount      = 10
-	MaxKlineCount      = 30
-	MinLeverage        = 1
-	MaxBTCETHLeverage  = 20
-	MaxAltLeverage     = 20
-	MinPositionRatio   = 0.5
-	MaxPositionRatio   = 10.0
-	MinRiskReward      = 1.0
-	MaxRiskReward      = 10.0
-	MinMarginUsage     = 0.1
-	MaxMarginUsage     = 1.0
-	MinPositionSize    = 10.0
-	MaxPositionSize    = 1000.0
-	MinConfidence      = 50
-	MaxConfidence      = 100
-	MinRiskPerTradePct = 1.0
-	MaxRiskPerTradePct = 10.0
-	MinCorrBlock       = 0.30
-	MaxCorrBlock       = 0.99
+	MaxCandidateCoins       = 10
+	MaxPositions            = 8
+	MaxTimeframes           = 4
+	MinKlineCount           = 10
+	MaxKlineCount           = 30
+	MinLeverage             = 1
+	MaxBTCETHLeverage       = 20
+	MaxAltLeverage          = 20
+	MinPositionRatio        = 0.5
+	MaxPositionRatio        = 10.0
+	MinRiskReward           = 1.0
+	MaxRiskReward           = 10.0
+	MinMarginUsage          = 0.1
+	MaxMarginUsage          = 1.0
+	MinPositionSize         = 10.0
+	MaxPositionSize         = 1000.0
+	MinConfidence           = 50
+	MaxConfidence           = 100
+	MinRiskPerTradePct      = 1.0
+	MaxRiskPerTradePct      = 10.0
+	MinCorrBlock            = 0.30
+	MaxCorrBlock            = 0.99
+	MinATRStopMultiplier    = 0.5
+	MaxATRStopMultiplier    = 10.0
+	MinATRTargetMultiplier  = 0.5
+	MaxATRTargetMultiplier  = 10.0
+	MinATREligibilityCapPct = 0.5
+	MaxATREligibilityCapPct = 10.0
 )
 
 // ClampLimits enforces product-level limits on strategy config to prevent token overflow.
@@ -132,6 +138,35 @@ func (c *StrategyConfig) ClampLimits() {
 	}
 	if c.RiskControl.MinRiskRewardRatio > MaxRiskReward {
 		c.RiskControl.MinRiskRewardRatio = MaxRiskReward
+	}
+	// Clamp ATR scalp multipliers (0 = use default).
+	if c.RiskControl.ATRStopMultiplier > 0 {
+		if c.RiskControl.ATRStopMultiplier < MinATRStopMultiplier {
+			c.RiskControl.ATRStopMultiplier = MinATRStopMultiplier
+		}
+		if c.RiskControl.ATRStopMultiplier > MaxATRStopMultiplier {
+			c.RiskControl.ATRStopMultiplier = MaxATRStopMultiplier
+		}
+	}
+	if c.RiskControl.ATRTargetMultiplier > 0 {
+		if c.RiskControl.ATRTargetMultiplier < MinATRTargetMultiplier {
+			c.RiskControl.ATRTargetMultiplier = MinATRTargetMultiplier
+		}
+		if c.RiskControl.ATRTargetMultiplier > MaxATRTargetMultiplier {
+			c.RiskControl.ATRTargetMultiplier = MaxATRTargetMultiplier
+		}
+	}
+	// Clamp ATR eligibility cap (<=0 disables); normalize the timeframe string.
+	if c.RiskControl.ATREligibilityCapPct > 0 {
+		if c.RiskControl.ATREligibilityCapPct < MinATREligibilityCapPct {
+			c.RiskControl.ATREligibilityCapPct = MinATREligibilityCapPct
+		}
+		if c.RiskControl.ATREligibilityCapPct > MaxATREligibilityCapPct {
+			c.RiskControl.ATREligibilityCapPct = MaxATREligibilityCapPct
+		}
+	}
+	if c.RiskControl.ATREligibilityTimeframe == "" {
+		c.RiskControl.ATREligibilityTimeframe = "15m"
 	}
 	if c.RiskControl.MaxMarginUsage < MinMarginUsage {
 		c.RiskControl.MaxMarginUsage = MinMarginUsage
@@ -959,6 +994,15 @@ type RiskControlConfig struct {
 	MinRiskRewardRatio float64 `json:"min_risk_reward_ratio"`
 	// Min AI confidence to open position (AI guided)
 	MinConfidence int `json:"min_confidence"`
+
+	// ATR-adaptive scalp TP/SL (sub-day 15m). stop = entry ∓ ATRStopMultiplier×ATR14,
+	// target = entry ± ATRTargetMultiplier×ATR14. 0 = use default.
+	ATRStopMultiplier   float64 `json:"atr_stop_multiplier"`
+	ATRTargetMultiplier float64 `json:"atr_target_multiplier"`
+	// Hard-exclude coins whose ATR%/price on ATREligibilityTimeframe exceeds this
+	// cap (0 disables the filter).
+	ATREligibilityCapPct    float64 `json:"atr_eligibility_cap_pct"`
+	ATREligibilityTimeframe string  `json:"atr_eligibility_timeframe"`
 }
 
 // NewStrategyStore creates a new StrategyStore
@@ -1015,7 +1059,7 @@ func GetDefaultStrategyConfig(lang string) StrategyConfig {
 			EnableEMA:         false,
 			EnableMACD:        false,
 			EnableRSI:         false,
-			EnableATR:         false,
+			EnableATR:         true, // Required - the AI sizes sub-day 15m stops/targets from each coin's 15m ATR14
 			EnableBOLL:        false,
 			EnableVolume:      false,
 			EnableOI:          false,
@@ -1050,8 +1094,12 @@ func GetDefaultStrategyConfig(lang string) StrategyConfig {
 			MinPositionSize:              12,  // Min 12 USDT per position (CODE ENFORCED)
 			RiskPerTradePct:              3.0, // Cap stop-out loss at 3%% of equity per position (CODE ENFORCED)
 			CorrelationBlockThreshold:    0.7, // Block an open too correlated with a held position (0.7 = 70%%)
-			MinRiskRewardRatio:           3.0, // Min 3:1 profit/loss ratio (AI guided)
+			MinRiskRewardRatio:           1.2, // Min 1.2:1 for sub-day 15m scalps (AI guided + code enforced)
 			MinConfidence:                78,  // Min 78% confidence (AI guided)
+			ATRStopMultiplier:            1.5, // stop = entry ∓ 1.5×ATR14 (sub-day scalp)
+			ATRTargetMultiplier:          2.0, // target = entry ± 2×ATR14 (R/R ≈ 1.33)
+			ATREligibilityCapPct:         3.0, // hard-exclude coins with 15m ATR%/price > 3%
+			ATREligibilityTimeframe:      "15m",
 		},
 	}
 

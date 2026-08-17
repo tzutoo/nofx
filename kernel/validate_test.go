@@ -84,7 +84,7 @@ func TestLeverageFallback(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Use default position value ratios for testing (10x for BTC/ETH, 1.5x for altcoins)
-			err := validateDecision(&tt.decision, tt.accountEquity, tt.btcEthLeverage, tt.altcoinLeverage, 10.0, 1.5, 3.0)
+			err := validateDecision(&tt.decision, tt.accountEquity, tt.btcEthLeverage, tt.altcoinLeverage, 10.0, 1.5, 3.0, 3.0)
 
 			// Check error status
 			if (err != nil) != tt.wantError {
@@ -130,7 +130,7 @@ func TestValidateDecisionRiskCapsSize(t *testing.T) {
 		Symbol: "SOLUSDT", Action: "open_long", Leverage: 5,
 		PositionSizeUSD: 80, StopLoss: 90, TakeProfit: 140,
 	}
-	if err := validateDecision(&decision, 100, 10, 5, 1.0, 1.0, 3.0); err != nil {
+	if err := validateDecision(&decision, 100, 10, 5, 1.0, 1.0, 3.0, 3.0); err != nil {
 		t.Fatalf("validateDecision should clamp, not error: %v", err)
 	}
 	if !approxFloat(decision.PositionSizeUSD, 30, 0.01) {
@@ -142,7 +142,7 @@ func TestValidateDecisionRiskCapsSize(t *testing.T) {
 		Symbol: "SOLUSDT", Action: "open_long", Leverage: 5,
 		PositionSizeUSD: 100, StopLoss: 50, TakeProfit: 200, // ~37%% stop
 	}
-	if err := validateDecision(&wide, 100, 10, 5, 1.0, 1.0, 3.0); err == nil {
+	if err := validateDecision(&wide, 100, 10, 5, 1.0, 1.0, 3.0, 3.0); err == nil {
 		t.Fatal("expected stop-too-wide rejection")
 	}
 }
@@ -173,7 +173,7 @@ func TestValidateDecisionTinyAccountEdgeCase(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// equity 30, altcoin ratio 1.0 -> notional cap 30, budget 3%%.
-			err := validateDecision(&tc.decision, 30, 10, 5, 1.0, 1.0, 3.0)
+			err := validateDecision(&tc.decision, 30, 10, 5, 1.0, 1.0, 3.0, 3.0)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("validateDecision() error = %v, wantErr %v", err, tc.wantErr)
 			}
@@ -203,7 +203,7 @@ func TestClaw402XyzAllowsFullTenXNotional(t *testing.T) {
 		TakeProfit:      120,
 	}
 
-	if err := validateDecision(&decision, 30.68, 10, 10, 10.0, 10.0, 3.0); err != nil {
+	if err := validateDecision(&decision, 30.68, 10, 10, 10.0, 10.0, 3.0, 3.0); err != nil {
 		t.Fatalf("xyz TradeFi Claw402 full 10x notional should pass validation: %v", err)
 	}
 }

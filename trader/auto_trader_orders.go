@@ -32,22 +32,72 @@ const (
 // ensureStopLossTakeProfitDefaults fills BOTH SL/TP from entryPrice whenever
 // EITHER is <= 0. Returns an error only when entryPrice is unusable (<= 0) —
 // callers abort the open before positioning. Never mutates a fully-specified pair.
-func (at *AutoTrader) ensureStopLossTakeProfitDefaults(d *kernel.Decision, entryPrice float64) error {
+func (at *AutoTrader) ensureStopLossTakeProfitDefaults(d *kernel.Decision, entryPrice, atr14 float64) error {
 	if d.StopLoss > 0 && d.TakeProfit > 0 {
 		return nil
 	}
 	if entryPrice <= 0 {
 		return fmt.Errorf("cannot derive default SL/TP from invalid entry price %.4f for %s", entryPrice, d.Symbol)
 	}
+	isLong := d.Action != "open_short"
+	if stop, target, ok := kernel.ATRStopTarget(entryPrice, atr14, at.atrStopMultiplier(), at.atrTargetMultiplier(), isLong); ok {
+		d.StopLoss = stop
+		d.TakeProfit = target
+		at.logInfof("Filled ATR default SL/TP for %s from entry %.4f (ATR14 %.4f): SL=%.4f TP=%.4f", d.Symbol, entryPrice, atr14, d.StopLoss, d.TakeProfit)
+		return nil
+	}
 	if d.Action == "open_short" {
 		d.StopLoss = entryPrice * (1 + defaultStopLossPct)
 		d.TakeProfit = entryPrice * (1 - defaultTakeProfitPct)
-	} else { // open_long (and defensive default)
+	} else {
 		d.StopLoss = entryPrice * (1 - defaultStopLossPct)
 		d.TakeProfit = entryPrice * (1 + defaultTakeProfitPct)
 	}
-	at.logInfof("Filled default SL/TP for %s from entry %.4f: SL=%.4f TP=%.4f", d.Symbol, entryPrice, d.StopLoss, d.TakeProfit)
+	at.logInfof("Filled fixed default SL/TP for %s from entry %.4f: SL=%.4f TP=%.4f", d.Symbol, entryPrice, d.StopLoss, d.TakeProfit)
 	return nil
+}
+
+// atrStopMultiplier / atrTargetMultiplier / atrTimeframe read the ATR scalp
+// config with 0→default fallback (a legacy strategy has 0 for the new fields).
+func (at *AutoTrader) atrStopMultiplier() float64 {
+	if at.config.StrategyConfig != nil && at.config.StrategyConfig.RiskControl.ATRStopMultiplier > 0 {
+		return at.config.StrategyConfig.RiskControl.ATRStopMultiplier
+	}
+	return 1.5
+}
+
+func (at *AutoTrader) atrTargetMultiplier() float64 {
+	if at.config.StrategyConfig != nil && at.config.StrategyConfig.RiskControl.ATRTargetMultiplier > 0 {
+		return at.config.StrategyConfig.RiskControl.ATRTargetMultiplier
+	}
+	return 2.0
+}
+
+func (at *AutoTrader) atrTimeframe() string {
+	if at.config.StrategyConfig != nil && at.config.StrategyConfig.RiskControl.ATREligibilityTimeframe != "" {
+		return at.config.StrategyConfig.RiskControl.ATREligibilityTimeframe
+	}
+	return "15m"
+}
+
+// atrEligibilityCapPct returns the ATR eligibility cap (0 = disabled, matching
+// the CorrelationBlockThreshold convention). Legacy strategies have 0 until set.
+func (at *AutoTrader) atrEligibilityCapPct() float64 {
+	if at.config.StrategyConfig == nil {
+		return 0
+	}
+	return at.config.StrategyConfig.RiskControl.ATREligibilityCapPct
+}
+
+// fetchATR14 fetches the 15m ATR14 for a symbol (0 on failure/absent). Reads
+// TimeframeData[tf].ATR14 — the top-level market.Data struct has no ATR14 field.
+func (at *AutoTrader) fetchATR14(symbol string) float64 {
+	tf := at.atrTimeframe()
+	data, err := market.GetWithTimeframes(symbol, []string{tf}, tf, 30)
+	if err != nil || data == nil || data.TimeframeData == nil || data.TimeframeData[tf] == nil {
+		return 0
+	}
+	return data.TimeframeData[tf].ATR14
 }
 
 // attachStopLossTakeProfit places both reduce-only trigger orders for an open
@@ -131,6 +181,18 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 		equity = availableBalance // Fallback to available balance
 	}
 
+	// Derive the ATR stop/target BEFORE sizing so the risk cap in
+	// applyAutopilotFullSizeOpen runs on a real stop (forced opens carry
+	// SL/TP=0 and would otherwise skip the execution risk cap).
+	if decision.StopLoss <= 0 || decision.TakeProfit <= 0 {
+		atr14 := at.fetchATR14(decision.Symbol)
+		if err := at.ensureStopLossTakeProfitDefaults(decision, marketData.CurrentPrice, atr14); err != nil {
+			return fmt.Errorf("aborting %s open without SL/TP: %w", decision.Symbol, err)
+		}
+		actionRecord.StopLoss = decision.StopLoss
+		actionRecord.TakeProfit = decision.TakeProfit
+	}
+
 	at.applyAutopilotFullSizeOpen(decision, equity)
 
 	// [CODE ENFORCED] Position Value Ratio Check: position_value <= equity × ratio
@@ -161,14 +223,6 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	quantity := actualPositionSize / marketData.CurrentPrice
 	actionRecord.Quantity = quantity
 	actionRecord.Price = marketData.CurrentPrice
-
-	// Fill default SL/TP before opening (clean abort if entry price unusable),
-	// and persist the effective values into the decision record.
-	if err := at.ensureStopLossTakeProfitDefaults(decision, marketData.CurrentPrice); err != nil {
-		return fmt.Errorf("aborting %s open without SL/TP: %w", decision.Symbol, err)
-	}
-	actionRecord.StopLoss = decision.StopLoss
-	actionRecord.TakeProfit = decision.TakeProfit
 
 	// Set margin mode
 	if err := at.trader.SetMarginMode(decision.Symbol, at.config.IsCrossMargin); err != nil {
@@ -252,6 +306,18 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 		equity = availableBalance // Fallback to available balance
 	}
 
+	// Derive the ATR stop/target BEFORE sizing so the risk cap in
+	// applyAutopilotFullSizeOpen runs on a real stop (forced opens carry
+	// SL/TP=0 and would otherwise skip the execution risk cap).
+	if decision.StopLoss <= 0 || decision.TakeProfit <= 0 {
+		atr14 := at.fetchATR14(decision.Symbol)
+		if err := at.ensureStopLossTakeProfitDefaults(decision, marketData.CurrentPrice, atr14); err != nil {
+			return fmt.Errorf("aborting %s open without SL/TP: %w", decision.Symbol, err)
+		}
+		actionRecord.StopLoss = decision.StopLoss
+		actionRecord.TakeProfit = decision.TakeProfit
+	}
+
 	at.applyAutopilotFullSizeOpen(decision, equity)
 
 	// [CODE ENFORCED] Position Value Ratio Check: position_value <= equity × ratio
@@ -282,14 +348,6 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 	quantity := actualPositionSize / marketData.CurrentPrice
 	actionRecord.Quantity = quantity
 	actionRecord.Price = marketData.CurrentPrice
-
-	// Fill default SL/TP before opening (clean abort if entry price unusable),
-	// and persist the effective values into the decision record.
-	if err := at.ensureStopLossTakeProfitDefaults(decision, marketData.CurrentPrice); err != nil {
-		return fmt.Errorf("aborting %s open without SL/TP: %w", decision.Symbol, err)
-	}
-	actionRecord.StopLoss = decision.StopLoss
-	actionRecord.TakeProfit = decision.TakeProfit
 
 	// Set margin mode
 	if err := at.trader.SetMarginMode(decision.Symbol, at.config.IsCrossMargin); err != nil {

@@ -36,16 +36,41 @@ func RiskCappedPositionSize(equity, entryPrice, stopPrice float64, isLong bool, 
 	return riskSize
 }
 
-func validateDecisions(decisions []Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio float64, riskPerTradePct float64) error {
+// ATRStopTarget returns the stop/target price for the given side using
+// stop = entry ∓ stopMult*atr14, target = entry ± targetMult*atr14. ok=false
+// when atr14<=0 or the at-risk leg would be <=0 (caller falls back to fixed %).
+// Validity is side-aware: for a long the stop (below entry) must stay >0; for a
+// short the target (below entry) must stay >0.
+func ATRStopTarget(entryPrice, atr14, stopMult, targetMult float64, isLong bool) (stop, target float64, ok bool) {
+	if entryPrice <= 0 || atr14 <= 0 || stopMult <= 0 || targetMult <= 0 {
+		return 0, 0, false
+	}
+	if isLong {
+		stop = entryPrice - stopMult*atr14
+		target = entryPrice + targetMult*atr14
+		if stop <= 0 {
+			return 0, 0, false
+		}
+	} else {
+		stop = entryPrice + stopMult*atr14
+		target = entryPrice - targetMult*atr14
+		if target <= 0 {
+			return 0, 0, false
+		}
+	}
+	return stop, target, true
+}
+
+func validateDecisions(decisions []Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio, riskPerTradePct, minRiskRewardRatio float64) error {
 	for i := range decisions {
-		if err := validateDecision(&decisions[i], accountEquity, btcEthLeverage, altcoinLeverage, btcEthPosRatio, altcoinPosRatio, riskPerTradePct); err != nil {
+		if err := validateDecision(&decisions[i], accountEquity, btcEthLeverage, altcoinLeverage, btcEthPosRatio, altcoinPosRatio, riskPerTradePct, minRiskRewardRatio); err != nil {
 			return fmt.Errorf("decision #%d validation failed: %w", i+1, err)
 		}
 	}
 	return nil
 }
 
-func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio float64, riskPerTradePct float64) error {
+func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio, riskPerTradePct, minRiskRewardRatio float64) error {
 	validActions := map[string]bool{
 		"open_long":   true,
 		"open_short":  true,
@@ -149,9 +174,13 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 			}
 		}
 
-		if riskRewardRatio < 3.0 {
-			return fmt.Errorf("risk/reward ratio too low (%.2f:1), must be ≥3.0:1 [risk: %.2f%% reward: %.2f%%] [stop loss: %.2f take profit: %.2f]",
-				riskRewardRatio, riskPercent, rewardPercent, d.StopLoss, d.TakeProfit)
+		floor := minRiskRewardRatio
+		if floor < 1.0 {
+			floor = 1.0 // hard floor, mirrors store.MinRiskReward
+		}
+		if riskRewardRatio < floor {
+			return fmt.Errorf("risk/reward ratio too low (%.2f:1), must be ≥%.1f:1 [risk: %.2f%% reward: %.2f%%] [stop loss: %.2f take profit: %.2f]",
+				riskRewardRatio, floor, riskPercent, rewardPercent, d.StopLoss, d.TakeProfit)
 		}
 
 		// Risk cap: bound size so a stop-out loses at most RiskPerTradePct%% of equity.

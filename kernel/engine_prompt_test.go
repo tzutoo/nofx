@@ -155,8 +155,8 @@ func TestBuildSystemPromptUsesAtrCandleStops(t *testing.T) {
 	engine := NewStrategyEngine(&cfg)
 	prompt := engine.BuildSystemPrompt(30, "balanced")
 
-	if !strings.Contains(prompt, "set stops and targets from ATR and recent candle structure") {
-		t.Fatalf("vergex prompt should set stops/targets from ATR and candle structure:\n%s", prompt)
+	if !strings.Contains(prompt, "stops and targets from each coin's own 15m ATR14") {
+		t.Fatalf("vergex prompt should set stops/targets from the coin's 15m ATR14:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "never as a stop/target level") {
 		t.Fatalf("vergex prompt should forbid using the heatmap as a stop/target level:\n%s", prompt)

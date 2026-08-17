@@ -272,7 +272,7 @@ func (s *Server) createDefaultStrategies(userID string, lang string) error {
 		c.RiskControl.AltcoinMaxPositionValueRatio = 1.0
 		c.RiskControl.MaxMarginUsage = 0.5
 		c.RiskControl.MinConfidence = 78
-		c.RiskControl.MinRiskRewardRatio = 3.0
+		c.RiskControl.MinRiskRewardRatio = 1.2
 		c.Indicators.Klines.PrimaryTimeframe = "15m"
 		c.Indicators.Klines.PrimaryCount = 30
 		c.Indicators.Klines.LongerTimeframe = ""

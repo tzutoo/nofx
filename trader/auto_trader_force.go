@@ -107,6 +107,26 @@ func (at *AutoTrader) ensureLongShortCoverage(decisions []kernel.Decision, ctx *
 				at.logInfof("⚖️ Skipped forced %s %s: no valid market price (err=%v, price=%.8f)", action, c.Symbol, mErr, mp)
 				continue
 			}
+			// ATR eligibility: hard-exclude coins whose ATR%/price exceeds the cap,
+			// matching the kernel candidate filter. The forced pool draws from
+			// DirectionalCandidates() which may contain symbols absent from
+			// MarketDataMap, so fetch ATR on demand when missing.
+			if capPct := at.atrEligibilityCapPct(); capPct > 0 &&
+				at.config.StrategyConfig.Indicators.Klines.PrimaryTimeframe == "15m" {
+				tf := at.atrTimeframe()
+				atr14 := 0.0
+				if md, ok := ctx.MarketDataMap[c.Symbol]; ok && md != nil && md.TimeframeData != nil && md.TimeframeData[tf] != nil {
+					atr14 = md.TimeframeData[tf].ATR14
+				} else {
+					atr14 = at.fetchATR14(c.Symbol)
+				}
+				if atr14 > 0 && mp > 0 {
+					if atrPct := atr14 / mp * 100; atrPct > capPct {
+						at.logInfof("⚖️ Skipped forced %s %s: %s ATR %.2f%% exceeds cap %.2f%%", action, c.Symbol, tf, atrPct, capPct)
+						continue
+					}
+				}
+			}
 			b := universeBaseKey(c.Symbol)
 			if b == "" || held[b] {
 				continue
