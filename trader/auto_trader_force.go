@@ -127,6 +127,11 @@ func (at *AutoTrader) ensureLongShortCoverage(decisions []kernel.Decision, ctx *
 					}
 				}
 			}
+			// Testnet tradability: skip names that are halted/absent on the execution network.
+			if at.config.HyperliquidTestnet && !at.isTestnetTradable(c.Symbol) {
+				at.logInfof("⚖️ Skipped forced %s %s: not tradable on testnet", action, c.Symbol)
+				continue
+			}
 			b := universeBaseKey(c.Symbol)
 			if b == "" || held[b] {
 				continue

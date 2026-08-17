@@ -625,6 +625,7 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 			at.logWarnf("⚠️ Failed to get candidate coins: %v (will use empty list)", err)
 		} else {
 			candidateCoins = coins
+			candidateCoins = at.filterTestnetTradability(candidateCoins)
 			logger.Infof("📋 [%s] Strategy engine fetched candidate coins: %d", at.name, len(candidateCoins))
 			// Tell the signal-service which symbols we're evaluating so its
 			// Pineify enrichment prioritizes them (fresh data at decision time).
@@ -897,4 +898,67 @@ func (at *AutoTrader) pushSignalPriority(coins []kernel.CandidateCoin) {
 	if resp.StatusCode != http.StatusOK {
 		logger.Debugf("⚠️ signal-service priority push returned %d", resp.StatusCode)
 	}
+}
+
+// filterTestnetTradability removes candidates that are not tradable on the
+// execution network (testnet): absent, delisted, or halted (zero mark). This
+// stops the AI from suggesting names that can't fill on a thin testnet. No-op
+// on mainnet.
+func (at *AutoTrader) filterTestnetTradability(coins []kernel.CandidateCoin) []kernel.CandidateCoin {
+	if !at.config.HyperliquidTestnet {
+		return coins
+	}
+	tradable := at.testnetTradableSymbols()
+	at.testnetTradableCache = tradable // cache for the forced-open path (drawn from DirectionalCandidates)
+	if len(tradable) == 0 {
+		return coins // fetch failed -> fail-open (don't silently empty the universe)
+	}
+	kept := make([]kernel.CandidateCoin, 0, len(coins))
+	for _, c := range coins {
+		if tradable[normalizeUniverseSymbol(c.Symbol)] {
+			kept = append(kept, c)
+		} else {
+			at.logInfof("🚫 Excluded candidate %s: not tradable on testnet", c.Symbol)
+		}
+	}
+	return kept
+}
+
+// testnetTradableSymbols fetches the market snapshots (core perp + xyz) for the
+// execution network and returns the set of symbols that are live and tradable
+// (not delisted and a positive mark price).
+func (at *AutoTrader) testnetTradableSymbols() map[string]bool {
+	infoURL := hyperliquid.MainnetAPIURL
+	if at.config.HyperliquidTestnet {
+		infoURL = hyperliquid.TestnetAPIURL
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	tradable := make(map[string]bool)
+	for _, dex := range []string{"", "xyz"} {
+		snaps, err := hyperliquid.GetMarketSnapshotAt(context.Background(), client, infoURL, dex)
+		if err != nil {
+			at.logWarnf("⚠️ Tradability filter: failed to fetch %q snapshot: %v", dex, err)
+			continue
+		}
+		for _, m := range snaps {
+			if !m.IsDelisted && m.MarkPx > 0 {
+				tradable[normalizeUniverseSymbol(m.Symbol)] = true
+			}
+		}
+	}
+	return tradable
+}
+
+// isTestnetTradable reports whether a symbol is in the testnet tradable set. It
+// is used by the forced-open path (ensureLongShortCoverage), which draws from the
+// vergex ranking cache rather than the filtered candidate list, so it needs its
+// own check against the cached set.
+func (at *AutoTrader) isTestnetTradable(symbol string) bool {
+	if !at.config.HyperliquidTestnet {
+		return true
+	}
+	if len(at.testnetTradableCache) == 0 {
+		return true // no cache -> fail-open
+	}
+	return at.testnetTradableCache[normalizeUniverseSymbol(symbol)]
 }

@@ -114,6 +114,12 @@ type MarketSnapshot struct {
 // dex; dex "xyz" = the HIP-3 TradeFi perp dex. It is the raw input the signal
 // service's ingest worker consumes.
 func GetMarketSnapshot(ctx context.Context, client *http.Client, dex string) ([]MarketSnapshot, error) {
+	return GetMarketSnapshotAt(ctx, client, hyperliquidInfoURL, dex)
+}
+
+// GetMarketSnapshotAt is GetMarketSnapshot with an explicit info API URL, so
+// callers can target a specific network (mainnet or testnet).
+func GetMarketSnapshotAt(ctx context.Context, client *http.Client, infoURL, dex string) ([]MarketSnapshot, error) {
 	reqPayload := map[string]string{"type": "metaAndAssetCtxs"}
 	if dex != "" {
 		reqPayload["dex"] = dex
@@ -122,7 +128,7 @@ func GetMarketSnapshot(ctx context.Context, client *http.Client, dex string) ([]
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", hyperliquidInfoURL, bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", infoURL, bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

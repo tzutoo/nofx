@@ -191,6 +191,7 @@ type AutoTrader struct {
 	positionFirstSeenTime map[string]int64     // Position first seen time (symbol_side -> timestamp in milliseconds)
 	openFailures          map[string]time.Time // Failed-open symbols -> failure time (retry cooldown)
 	openFailuresMu        sync.Mutex
+	testnetTradableCache  map[string]bool    // Tradable symbols on the execution network (testnet filter)
 	stopMonitorCh         chan struct{}      // Used to stop monitoring goroutine
 	monitorWg             sync.WaitGroup     // Used to wait for monitoring goroutine to finish
 	peakPnLCache          map[string]float64 // Peak profit cache (symbol -> peak P&L percentage)
