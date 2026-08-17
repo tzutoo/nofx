@@ -149,10 +149,16 @@ func (t *HyperliquidTrader) GetBalance() (map[string]interface{}, error) {
 	}
 	xyzMarginUsed := calculateXYZMarginUsed(xyzPositions)
 	calculatedMarginUsed := totalMarginUsed + xyzMarginUsed
-	if t.isUnifiedAccount && !spotUSDCFound && calculatedMarginUsed > 0 {
+	// The unified-account invariant — spot is the collateral and its hold must
+	// reflect any margin in use — only holds when spot actually funds the account.
+	// When funds live in the perp account (perp accountValue > spot, e.g. testnet
+	// faucet deposits directly to perp), the margin is held in perp and the spot
+	// hold legitimately stays 0.
+	perpFunded := accountValue > spotUSDCBalance && accountValue > 0
+	if t.isUnifiedAccount && !perpFunded && !spotUSDCFound && calculatedMarginUsed > 0 {
 		return nil, fmt.Errorf("unified Spot USDC state is missing while %.4f USDC margin is in use", calculatedMarginUsed)
 	}
-	if t.isUnifiedAccount && spotUSDCHold <= 0 && calculatedMarginUsed > 0 {
+	if t.isUnifiedAccount && !perpFunded && spotUSDCHold <= 0 && calculatedMarginUsed > 0 {
 		return nil, fmt.Errorf("unified Spot hold is unavailable while %.4f USDC margin is in use", calculatedMarginUsed)
 	}
 	balanceBreakdown := calculateHyperliquidBalanceBreakdown(
@@ -243,17 +249,26 @@ func calculateHyperliquidBalanceBreakdown(
 	totalMarginUsed := perpMarginUsed + xyzMarginUsed
 
 	if isUnifiedAccount {
-		// In Hyperliquid unified accounts, Spot USDC total is already the
-		// mark-to-market account equity: the exchange updates it as unrealized PnL
-		// changes. Adding perp/xyz unrealized PnL again would double-count gains
-		// and losses. Derive the pre-PnL wallet balance only for fields that need
-		// that legacy distinction.
+		// In Hyperliquid unified accounts, Spot USDC is normally the mark-to-market
+		// account equity: the exchange updates it as unrealized PnL changes, so
+		// adding perp/xyz unrealized PnL again would double-count gains and losses.
+		// However, funds deposited directly to the perp account (e.g. the testnet
+		// faucet) live in the perp accountValue while spot stays ~0, so the equity
+		// must reflect whichever side actually holds the funds. We still never sum
+		// spot+perp+xyz — that would double-count the shared collateral.
 		totalEquity := spotUSDCBalance
+		perpFunded := perpAccountValue > totalEquity
+		if perpFunded {
+			totalEquity = perpAccountValue
+		}
 		totalWalletBalance := totalEquity - totalUnrealizedPnl
-		// Spot hold is the authoritative account-level reservation. It can include
-		// more than position margin, so use it for availability without relabeling
-		// it as TotalMarginUsed.
+		// Availability: spot-funded accounts use spot minus the authoritative hold;
+		// perp-funded accounts use the perp Withdrawable (accountValue includes
+		// margin, which is not withdrawable).
 		availableBalance := totalEquity - spotUSDCHold
+		if perpFunded && perpWithdrawable > 0 {
+			availableBalance = perpWithdrawable
+		}
 		if availableBalance < 0 {
 			availableBalance = 0
 		}
@@ -346,8 +361,9 @@ func (t *HyperliquidTrader) getXYZDexBalance() (accountValue float64, unrealized
 	}
 
 	// Determine API URL
-	apiURL := "https://api.hyperliquid.xyz/info"
-	// Note: xyz dex may not be available on testnet
+	apiURL := t.infoURL()
+	// Note: the xyz meta/asset indices differ between mainnet and testnet, so this
+	// must be read from the same network the orders are placed on.
 
 	req, err := http.NewRequestWithContext(t.ctx, "POST", apiURL, bytes.NewBuffer(jsonBody))
 	if err != nil {
@@ -438,7 +454,7 @@ func (t *HyperliquidTrader) getXyzMarketPrice(coin string) (float64, error) {
 		return 0, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	apiURL := "https://api.hyperliquid.xyz/info"
+	apiURL := t.infoURL()
 
 	req, err := http.NewRequestWithContext(t.ctx, "POST", apiURL, bytes.NewBuffer(jsonBody))
 	if err != nil {

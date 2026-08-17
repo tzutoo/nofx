@@ -463,7 +463,7 @@ func (t *HyperliquidTrader) cancelXyzOrders(coin string) error {
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	apiURL := "https://api.hyperliquid.xyz/info"
+	apiURL := t.infoURL()
 
 	req, err := http.NewRequestWithContext(t.ctx, "POST", apiURL, bytes.NewBuffer(jsonBody))
 	if err != nil {
@@ -614,7 +614,8 @@ func (t *HyperliquidTrader) setXyzLeverage(coin string, leverage int) error {
 		return fmt.Errorf("xyz asset %s not found in meta", coin)
 	}
 
-	assetIndex := xyzDexAssetIndex(metaIndex)
+	assetIndex := t.xyzDexAssetIndex(metaIndex)
+	logger.Infof("  [xyz leverage] coin=%s metaIndex=%d assetIndex=%d", coin, metaIndex, assetIndex)
 
 	// xyz dex equities (US stocks, etc.) are isolated-margin-only on Hyperliquid:
 	// sending IsCross=true (the core-perp cross-margin default) is rejected with
@@ -721,7 +722,7 @@ func (t *HyperliquidTrader) placeXyzOrder(coin string, isBuy bool, size float64,
 		return fmt.Errorf("xyz asset %s not found in meta", coin)
 	}
 
-	assetIndex := xyzDexAssetIndex(metaIndex)
+	assetIndex := t.xyzDexAssetIndex(metaIndex)
 
 	// Round size to correct precision
 	szDecimals := t.getXyzSzDecimals(coin)
@@ -880,7 +881,7 @@ func (t *HyperliquidTrader) placeXyzTriggerOrder(coin string, isBuy bool, size f
 		return fmt.Errorf("xyz asset %s not found in meta", coin)
 	}
 
-	assetIndex := xyzDexAssetIndex(metaIndex)
+	assetIndex := t.xyzDexAssetIndex(metaIndex)
 
 	// Round size to correct precision
 	szDecimals := t.getXyzSzDecimals(coin)

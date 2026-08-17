@@ -66,8 +66,11 @@ func TestUnifiedAccountNeverFallsBackToSeparateAccountAggregation(t *testing.T) 
 		8,
 	)
 
-	requireClose(t, breakdown.TotalEquity, 0)
-	requireClose(t, breakdown.AvailableBalance, 0)
+	// When spot is ~0 (funds live in the perp account, e.g. the testnet faucet),
+	// the perp accountValue is the equity — but perp+xyz are still NOT summed, so
+	// the shared collateral is never double-counted.
+	requireClose(t, breakdown.TotalEquity, 100)
+	requireClose(t, breakdown.AvailableBalance, 90)
 }
 
 func TestSeparateAccountsStillAddIndependentBalances(t *testing.T) {

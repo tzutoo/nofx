@@ -63,7 +63,7 @@ func (t *HyperliquidTrader) fetchXyzMeta() error {
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	apiURL := "https://api.hyperliquid.xyz/info"
+	apiURL := t.infoURL()
 
 	req, err := http.NewRequestWithContext(t.ctx, "POST", apiURL, bytes.NewBuffer(jsonBody))
 	if err != nil {
@@ -96,8 +96,61 @@ func (t *HyperliquidTrader) fetchXyzMeta() error {
 	t.xyzMeta = &meta
 	t.xyzMetaMutex.Unlock()
 
+	// Resolve the HIP-3 perp-dex index for the xyz dex (best-effort; a failure
+	// leaves the mainnet default of 1 in place).
+	if err := t.resolveXyzPerpDexIndex(); err != nil {
+		logger.Infof("⚠️ Failed to resolve xyz perp-dex index: %v", err)
+	}
+
 	logger.Infof("✅ xyz dex meta fetched, contains %d assets", len(meta.Universe))
 	return nil
+}
+
+// resolveXyzPerpDexIndex queries the perpDexs info endpoint and records the
+// HIP-3 perp-dex index for the "xyz" dex. This index is 1 on mainnet but varies
+// on testnet (where many builder dexes are deployed), so it cannot be hardcoded.
+func (t *HyperliquidTrader) resolveXyzPerpDexIndex() error {
+	jsonBody, err := json.Marshal(map[string]string{"type": "perpDexs"})
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(t.ctx, "POST", t.infoURL(), bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("perpDexs API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	// perpDexs is [null, {name:...}, ...] — index 0 is nil (the default/core dex),
+	// and each builder dex occupies its own array index.
+	var perpDexs []*struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &perpDexs); err != nil {
+		return fmt.Errorf("failed to parse perpDexs: %w", err)
+	}
+	for i, pd := range perpDexs {
+		if pd != nil && pd.Name == "xyz" {
+			t.xyzPerpDexIndex = i
+			logger.Infof("✅ xyz perp-dex index resolved: %d", i)
+			return nil
+		}
+	}
+	return fmt.Errorf("xyz dex not found in perpDexs")
 }
 
 // getXyzSzDecimals gets quantity precision for xyz dex asset

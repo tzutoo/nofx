@@ -24,10 +24,11 @@ type HyperliquidTrader struct {
 	isCrossMargin    bool              // Whether to use cross margin mode
 	isUnifiedAccount bool              // Whether to use Unified Account mode (Spot as collateral for Perps)
 	// xyz dex support (stocks, forex, commodities)
-	xyzMeta      *xyzDexMeta
-	xyzMetaMutex sync.RWMutex
-	privateKey   *ecdsa.PrivateKey // For xyz dex signing
-	isTestnet    bool
+	xyzMeta         *xyzDexMeta
+	xyzMetaMutex    sync.RWMutex
+	xyzPerpDexIndex int               // HIP-3 perp-dex index for xyz (0 = unresolved; resolved from perpDexs)
+	privateKey      *ecdsa.PrivateKey // For xyz dex signing
+	isTestnet       bool
 }
 
 // xyzDexMeta represents metadata for xyz dex assets
@@ -71,15 +72,23 @@ var defaultBuilder = &hyperliquid.BuilderInfo{
 	Fee:     50,
 }
 
-// xyzPerpDexIndex is the HIP-3 perp-dex index for the xyz dex. Verified from
-// the perpDexs API, which returns [null, {name:"xyz",...}] — so xyz dex sits
-// at index 1.
-const xyzPerpDexIndex = 1
+// defaultXyzPerpDexIndex is the mainnet HIP-3 perp-dex index for the xyz dex
+// (mainnet perpDexs = [null, {name:"xyz",...}], so xyz sits at index 1). Testnet
+// has many more builder dexes (xyz sits at a different index), so the real index
+// is resolved at runtime via resolveXyzPerpDexIndex; this value is only the
+// fallback when resolution has not run or fails.
+const defaultXyzPerpDexIndex = 1
 
 // xyzDexAssetIndex computes the HIP-3 perp-dex asset index for an xyz dex asset
 // from its 0-based meta index: 100000 + perpDexIndex*10000 + metaIndex.
-func xyzDexAssetIndex(metaIndex int) int {
-	return 100000 + xyzPerpDexIndex*10000 + metaIndex
+// The perpDexIndex is resolved per-network; 0 means unresolved, in which case the
+// mainnet default (1) is used.
+func (t *HyperliquidTrader) xyzDexAssetIndex(metaIndex int) int {
+	idx := t.xyzPerpDexIndex
+	if idx <= 0 {
+		idx = defaultXyzPerpDexIndex
+	}
+	return 100000 + idx*10000 + metaIndex
 }
 
 // isXyzDexAsset checks if a symbol is an xyz dex asset.
@@ -101,6 +110,17 @@ func absFloat(x float64) float64 {
 		return -x
 	}
 	return x
+}
+
+// infoURL returns the Hyperliquid info API URL for the trader's network. The
+// xyz meta (asset-index mapping), xyz balance and xyz market price must be read
+// from the SAME network the orders are placed on, because xyz asset indices
+// differ between mainnet and testnet.
+func (t *HyperliquidTrader) infoURL() string {
+	if t.isTestnet {
+		return hlprovider.TestnetAPIURL
+	}
+	return hlprovider.MainnetAPIURL
 }
 
 // NewHyperliquidTrader creates a Hyperliquid trader

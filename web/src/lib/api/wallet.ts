@@ -49,25 +49,31 @@ export const walletApi = {
     return handleJSONResponse<GeneratedWallet>(res)
   },
 
-  async getHyperliquidConnectConfig(): Promise<HyperliquidConnectConfig> {
-    const res = await fetch(`${API_BASE}/hyperliquid/connect-config`)
+  async getHyperliquidConnectConfig(
+    testnet?: boolean
+  ): Promise<HyperliquidConnectConfig> {
+    const res = await fetch(
+      `${API_BASE}/hyperliquid/connect-config${testnet ? '?testnet=true' : ''}`
+    )
     return handleJSONResponse<HyperliquidConnectConfig>(res)
   },
 
   async getHyperliquidAccount(
-    address: string
+    address: string,
+    testnet?: boolean
   ): Promise<HyperliquidAccountSummary> {
     const res = await fetch(
-      `${API_BASE}/hyperliquid/account?address=${encodeURIComponent(address)}`
+      `${API_BASE}/hyperliquid/account?address=${encodeURIComponent(address)}${testnet ? '&testnet=true' : ''}`
     )
     return handleJSONResponse<HyperliquidAccountSummary>(res)
   },
 
   async getHyperliquidAgent(
-    address: string
+    address: string,
+    testnet?: boolean
   ): Promise<HyperliquidAgentResponse> {
     const res = await fetch(
-      `${API_BASE}/hyperliquid/agent?address=${encodeURIComponent(address)}`
+      `${API_BASE}/hyperliquid/agent?address=${encodeURIComponent(address)}${testnet ? '&testnet=true' : ''}`
     )
     return handleJSONResponse<HyperliquidAgentResponse>(res)
   },
@@ -75,12 +81,13 @@ export const walletApi = {
   async submitHyperliquidApproval(
     action: Record<string, unknown>,
     nonce: number,
-    signature: HyperliquidSignature
+    signature: HyperliquidSignature,
+    testnet?: boolean
   ) {
     const res = await fetch(`${API_BASE}/hyperliquid/submit-exchange`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, nonce, signature }),
+      body: JSON.stringify({ action, nonce, signature, testnet }),
     })
     return handleJSONResponse<{ success: boolean; response?: unknown }>(res)
   },

@@ -22,6 +22,8 @@ const (
 	defaultHyperliquidBuilderMaxFee = "0.05%"
 	hyperliquidExchangeURL          = "https://api.hyperliquid.xyz/exchange"
 	hyperliquidInfoURL              = "https://api.hyperliquid.xyz/info"
+	hyperliquidTestnetExchangeURL   = "https://api.hyperliquid-testnet.xyz/exchange"
+	hyperliquidTestnetInfoURL       = "https://api.hyperliquid-testnet.xyz/info"
 	// nofxHyperliquidAgentName must match AGENT_NAME used by the frontend
 	// approveAgent flow so we can locate the NOFX-managed agent on-chain.
 	nofxHyperliquidAgentName = "NOFX Agent"
@@ -30,6 +32,7 @@ const (
 type hyperliquidSubmitRequest struct {
 	Action    map[string]any `json:"action" binding:"required"`
 	Nonce     int64          `json:"nonce" binding:"required"`
+	Testnet   bool           `json:"testnet"`
 	Signature struct {
 		R string `json:"r" binding:"required"`
 		S string `json:"s" binding:"required"`
@@ -117,10 +120,14 @@ func hyperliquidBuilderMaxFee() string {
 }
 
 func (s *Server) handleHyperliquidConnectConfig(c *gin.Context) {
+	chain := "Mainnet"
+	if c.Query("testnet") == "true" {
+		chain = "Testnet"
+	}
 	c.JSON(http.StatusOK, hyperliquidConfigResponse{
 		BuilderAddress: hyperliquidBuilderAddress(),
 		BuilderMaxFee:  hyperliquidBuilderMaxFee(),
-		Chain:          "Mainnet",
+		Chain:          chain,
 		SignatureChain: "0x66eee",
 	})
 }
@@ -132,8 +139,13 @@ func (s *Server) handleHyperliquidAccount(c *gin.Context) {
 		return
 	}
 
+	infoURL := hyperliquidInfoURL
+	if c.Query("testnet") == "true" {
+		infoURL = hyperliquidTestnetInfoURL
+	}
+
 	var state hyperliquidClearinghouseState
-	if err := postHyperliquidInfo(c, map[string]any{"type": "clearinghouseState", "user": address}, &state); err != nil {
+	if err := postHyperliquidInfo(c, infoURL, map[string]any{"type": "clearinghouseState", "user": address}, &state); err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to query Hyperliquid balance", "detail": err.Error()})
 		return
 	}
@@ -142,7 +154,7 @@ func (s *Server) handleHyperliquidAccount(c *gin.Context) {
 	// must not break the perp summary.
 	var spotUSDC, spotAvailable float64
 	var spotState hyperliquidSpotState
-	if err := postHyperliquidInfo(c, map[string]any{"type": "spotClearinghouseState", "user": address}, &spotState); err == nil {
+	if err := postHyperliquidInfo(c, infoURL, map[string]any{"type": "spotClearinghouseState", "user": address}, &spotState); err == nil {
 		for _, balance := range spotState.Balances {
 			if strings.EqualFold(balance.Coin, "USDC") {
 				spotUSDC = parseFloatOrZero(balance.Total)
@@ -188,12 +200,12 @@ func (s *Server) handleHyperliquidAccount(c *gin.Context) {
 
 // postHyperliquidInfo posts a query to the Hyperliquid info endpoint and
 // decodes the JSON response into out.
-func postHyperliquidInfo(c *gin.Context, requestBody map[string]any, out any) error {
+func postHyperliquidInfo(c *gin.Context, infoURL string, requestBody map[string]any, out any) error {
 	body, err := json.Marshal(requestBody)
 	if err != nil {
 		return fmt.Errorf("encode request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, hyperliquidInfoURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, infoURL, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -226,13 +238,18 @@ func (s *Server) handleHyperliquidAgent(c *gin.Context) {
 		return
 	}
 
+	infoURL := hyperliquidInfoURL
+	if c.Query("testnet") == "true" {
+		infoURL = hyperliquidTestnetInfoURL
+	}
+
 	body, err := json.Marshal(map[string]any{"type": "extraAgents", "user": address})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encode Hyperliquid agent request"})
 		return
 	}
 
-	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, hyperliquidInfoURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, infoURL, bytes.NewReader(body))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create Hyperliquid agent request"})
 		return
@@ -286,6 +303,11 @@ func (s *Server) handleHyperliquidSubmitExchange(c *gin.Context) {
 		return
 	}
 
+	exchangeURL := hyperliquidExchangeURL
+	if req.Testnet {
+		exchangeURL = hyperliquidTestnetExchangeURL
+	}
+
 	actionType, _ := req.Action["type"].(string)
 	switch actionType {
 	case "approveAgent":
@@ -320,7 +342,7 @@ func (s *Server) handleHyperliquidSubmitExchange(c *gin.Context) {
 	}
 
 	client := &http.Client{Timeout: 20 * time.Second}
-	hlReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, hyperliquidExchangeURL, bytes.NewReader(body))
+	hlReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, exchangeURL, bytes.NewReader(body))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create Hyperliquid request"})
 		return
@@ -405,10 +427,21 @@ func validateUsdClassTransferAction(action map[string]any) error {
 	if _, ok := action["toPerp"].(bool); !ok {
 		return fmt.Errorf("missing or invalid toPerp")
 	}
+	// usdClassTransfer (spot<->perp deposit relay) stays MAINNET-ONLY. The
+	// testnet-aware approveAgent/approveBuilderFee wallet-connect flow must not
+	// touch the funds relay, so require the mainnet chain explicitly even though
+	// validateCommonHyperliquidSignedAction now accepts both chains.
+	if strings.TrimSpace(fmt.Sprint(action["hyperliquidChain"])) != "Mainnet" {
+		return fmt.Errorf("invalid hyperliquidChain")
+	}
 	return validateCommonHyperliquidSignedAction(action)
 }
 
 func validateCommonHyperliquidSignedAction(action map[string]any) error {
+	chain := strings.TrimSpace(fmt.Sprint(action["hyperliquidChain"]))
+	if chain != "Mainnet" && chain != "Testnet" {
+		return fmt.Errorf("invalid hyperliquidChain")
+	}
 	// signatureChainId is the chain the user's wallet was on when signing —
 	// Hyperliquid accepts any value as long as it matches the EIP-712 domain
 	// of the signature (docs example: "0xa4b1"); the network is selected by
@@ -417,9 +450,6 @@ func validateCommonHyperliquidSignedAction(action map[string]any) error {
 	// value cannot be pinned server-side — validate the format only.
 	if !hexChainIDPattern.MatchString(strings.TrimSpace(fmt.Sprint(action["signatureChainId"]))) {
 		return fmt.Errorf("invalid signatureChainId")
-	}
-	if strings.TrimSpace(fmt.Sprint(action["hyperliquidChain"])) != "Mainnet" {
-		return fmt.Errorf("invalid hyperliquidChain")
 	}
 	if _, err := actionNonce(action); err != nil {
 		return err

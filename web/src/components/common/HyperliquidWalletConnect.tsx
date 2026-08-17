@@ -130,6 +130,7 @@ export function HyperliquidWalletConnect({
   // browser would otherwise show the red "Connect" CTA even though trading
   // authorization is complete and the bot is running.
   const [serverExchangeAddr, setServerExchangeAddr] = useState('')
+  const [useTestnet, setTestnet] = useState(false)
   const text = useMemo(
     () => ({
       title: language === 'zh' ? 'Hyperliquid Wallet' : 'Hyperliquid Wallet',
@@ -183,6 +184,8 @@ export function HyperliquidWalletConnect({
         language === 'zh'
           ? 'Hyperliquid forbids reusing an agent, so renewal creates a new agent approved for 180 days, then updates the stored key in NOFX (sign-in required).'
           : 'Hyperliquid forbids reusing an agent, so renewal creates a new agent approved for 180 days, then updates the stored key in NOFX (sign-in required).',
+      useTestnet:
+        language === 'zh' ? '使用测试网' : 'Use Testnet',
       noWalletTitle:
         language === 'zh' ? 'No EVM wallet detected' : 'No EVM wallet detected',
       noWalletDetail:
@@ -243,6 +246,7 @@ export function HyperliquidWalletConnect({
               normalizeAddress(state.mainWallet!)
         )
         if (!existing) return
+        setTestnet(Boolean(existing.testnet))
         setState((prev) => {
           if (
             normalizeAddress(prev.mainWallet || '') !==
@@ -308,7 +312,7 @@ export function HyperliquidWalletConnect({
       void refreshBalance(state.mainWallet)
       void refreshAgentInfo(state.mainWallet)
     }
-  }, [open, state.mainWallet])
+  }, [open, state.mainWallet, useTestnet])
 
   async function refreshAgentInfo(address = state.mainWallet) {
     if (!address) return
@@ -320,7 +324,7 @@ export function HyperliquidWalletConnect({
       setAgentInfo(null)
     }
     try {
-      const res = await api.getHyperliquidAgent(address)
+      const res = await api.getHyperliquidAgent(address, useTestnet)
       if (
         normalizeAddress(currentMainWalletRef.current || '') ===
         requestedAddress
@@ -349,7 +353,7 @@ export function HyperliquidWalletConnect({
     setBalanceLoading(true)
     setBalanceError('')
     try {
-      const summary = await api.getHyperliquidAccount(address)
+      const summary = await api.getHyperliquidAccount(address, useTestnet)
       setAccount(summary)
     } catch (err) {
       setAccount(null)
@@ -374,6 +378,7 @@ export function HyperliquidWalletConnect({
             normalizeAddress(address)
       )
       if (!existing) return false
+      setTestnet(Boolean(existing.testnet))
       setState((prev) => {
         if (
           normalizeAddress(prev.mainWallet || '') !== normalizeAddress(address)
@@ -540,7 +545,8 @@ export function HyperliquidWalletConnect({
     await api.submitHyperliquidApproval(
       signedAction,
       Number(signedAction.nonce),
-      signature
+      signature,
+      useTestnet
     )
     assertCurrentWallet(expectedWallet)
   }
@@ -575,7 +581,7 @@ export function HyperliquidWalletConnect({
       const nonce = Date.now()
       const action = {
         type: 'approveAgent',
-        hyperliquidChain: 'Mainnet',
+        hyperliquidChain: useTestnet ? 'Testnet' : 'Mainnet',
         agentAddress: state.agentAddress,
         agentName: buildAgentName(nonce),
         nonce,
@@ -623,7 +629,7 @@ export function HyperliquidWalletConnect({
       const nonce = Date.now()
       const action = {
         type: 'approveAgent',
-        hyperliquidChain: 'Mainnet',
+        hyperliquidChain: useTestnet ? 'Testnet' : 'Mainnet',
         agentAddress: newAgentAddress,
         agentName: buildAgentName(nonce),
         nonce,
@@ -678,7 +684,7 @@ export function HyperliquidWalletConnect({
             hyperliquid_wallet_addr: walletSnapshot,
             hyperliquid_unified_account: true,
             hyperliquid_builder_approved: existingBuilderApproved,
-            testnet: false,
+            testnet: useTestnet,
           },
         },
       })
@@ -715,7 +721,7 @@ export function HyperliquidWalletConnect({
       const nonce = Date.now()
       const action = {
         type: 'approveBuilderFee',
-        hyperliquidChain: 'Mainnet',
+        hyperliquidChain: useTestnet ? 'Testnet' : 'Mainnet',
         maxFeeRate: HYPERLIQUID_BUILDER_MAX_FEE,
         builder: normalizeAddress(HYPERLIQUID_BUILDER_ADDRESS),
         nonce,
@@ -745,7 +751,7 @@ export function HyperliquidWalletConnect({
               hyperliquid_wallet_addr: walletSnapshot,
               hyperliquid_unified_account: true,
               hyperliquid_builder_approved: true,
-              testnet: false,
+              testnet: useTestnet,
             },
           },
         })
@@ -758,7 +764,7 @@ export function HyperliquidWalletConnect({
           hyperliquid_wallet_addr: walletSnapshot,
           hyperliquid_unified_account: true,
           hyperliquid_builder_approved: true,
-          testnet: false,
+          testnet: useTestnet,
         })
         createdExchangeId = result.id
       }
@@ -826,7 +832,7 @@ export function HyperliquidWalletConnect({
               hyperliquid_wallet_addr: walletSnapshot,
               hyperliquid_unified_account: true,
               hyperliquid_builder_approved: true,
-              testnet: false,
+              testnet: useTestnet,
             },
           },
         })
@@ -863,7 +869,7 @@ export function HyperliquidWalletConnect({
         hyperliquid_wallet_addr: walletSnapshot,
         hyperliquid_unified_account: true,
         hyperliquid_builder_approved: true,
-        testnet: false,
+        testnet: useTestnet,
       })
       setState((prev) =>
         normalizeAddress(prev.mainWallet || '') ===
@@ -1031,6 +1037,20 @@ export function HyperliquidWalletConnect({
               </div>
             )}
 
+            <label className="flex items-start gap-3 p-4 rounded-xl cursor-pointer" style={{ background: 'rgba(224, 72, 59, 0.08)', border: '1px solid rgba(224, 72, 59, 0.2)' }}>
+              <input
+                type="checkbox"
+                checked={useTestnet}
+                onChange={(e) => setTestnet(e.target.checked)}
+                className="mt-0.5 w-4 h-4 accent-[#E0483B]"
+              />
+              <span className="flex-1">
+                <span className="block text-sm font-semibold" style={{ color: '#1A1813' }}>
+                  {text.useTestnet}
+                </span>
+              </span>
+            </label>
+
             {!complete && (
               <div className="grid grid-cols-1 gap-2">
                 {!state.mainWallet && (
@@ -1103,7 +1123,7 @@ export function HyperliquidWalletConnect({
               <div className="flex items-center justify-between gap-3">
                 <span className="text-nofx-text-muted">Network</span>
                 <span className="font-mono text-nofx-text">
-                  Hyperliquid Mainnet
+                  {useTestnet ? 'Hyperliquid Testnet' : 'Hyperliquid Mainnet'}
                 </span>
               </div>
               {complete && state.mainWallet && (

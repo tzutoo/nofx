@@ -22,17 +22,26 @@ func testXyzTrader() *HyperliquidTrader {
 	}
 }
 
-// TestXYZPerpDexIndex verifies the HIP-3 perp-dex index for the xyz dex is 1,
-// which is the invariant the whole asset-index formula depends on.
+// TestXYZPerpDexIndex verifies the mainnet default perp-dex index (1) and that
+// a resolved index is honored (testnet puts xyz at a much larger index).
 func TestXYZPerpDexIndex(t *testing.T) {
-	if xyzPerpDexIndex != 1 {
-		t.Fatalf("xyzPerpDexIndex = %d, want 1", xyzPerpDexIndex)
+	if defaultXyzPerpDexIndex != 1 {
+		t.Fatalf("defaultXyzPerpDexIndex = %d, want 1", defaultXyzPerpDexIndex)
+	}
+	ht := testXyzTrader() // xyzPerpDexIndex == 0 -> unresolved -> mainnet default
+	if got := ht.xyzDexAssetIndex(0); got != 110000 {
+		t.Fatalf("unresolved xyzDexAssetIndex(0) = %d, want 110000", got)
+	}
+	ht.xyzPerpDexIndex = 65 // testnet
+	if got := ht.xyzDexAssetIndex(0); got != 100000+65*10000 {
+		t.Fatalf("resolved xyzDexAssetIndex(0) = %d, want %d", got, 100000+65*10000)
 	}
 }
 
 // TestXYZDexAssetIndex verifies the HIP-3 perp-dex asset index formula:
 // 100000 + perpDexIndex*10000 + metaIndex.
 func TestXYZDexAssetIndex(t *testing.T) {
+	ht := testXyzTrader()
 	cases := map[int]int{
 		0:   110000,
 		1:   110001,
@@ -40,7 +49,7 @@ func TestXYZDexAssetIndex(t *testing.T) {
 		999: 110999,
 	}
 	for metaIndex, want := range cases {
-		if got := xyzDexAssetIndex(metaIndex); got != want {
+		if got := ht.xyzDexAssetIndex(metaIndex); got != want {
 			t.Fatalf("xyzDexAssetIndex(%d) = %d, want %d", metaIndex, got, want)
 		}
 	}
@@ -66,7 +75,7 @@ func TestSetLeverageXYZAssetIndex(t *testing.T) {
 		if metaIndex < 0 {
 			t.Fatalf("getXyzAssetIndex(%q) = %d, want >= 0", coin, metaIndex)
 		}
-		if got := xyzDexAssetIndex(metaIndex); got != want {
+		if got := ht.xyzDexAssetIndex(metaIndex); got != want {
 			t.Fatalf("xyz asset %s: asset index = %d (metaIndex=%d), want %d",
 				coin, got, metaIndex, want)
 		}
