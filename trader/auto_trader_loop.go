@@ -343,11 +343,21 @@ func (at *AutoTrader) runCycle() error {
 			continue
 		}
 		if isOpenAction(d.Action) {
+			if reason := at.failedOpenCooldownReason(d.Symbol); reason != "" {
+				at.logWarnf("🧊 %s %s blocked: %s", d.Symbol, d.Action, reason)
+				actionRecord.Error = reason
+				record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("🧊 %s %s blocked: %s", d.Symbol, d.Action, reason))
+				record.Decisions = append(record.Decisions, actionRecord)
+				continue
+			}
 			opensAllowedThisCycle++
 		}
 
 		if err := at.executeDecisionWithRecord(&d, &actionRecord); err != nil {
 			at.logErrorf("❌ Failed to execute decision (%s %s): %v", d.Symbol, d.Action, err)
+			if isOpenAction(d.Action) {
+				at.markOpenFailure(d.Symbol)
+			}
 			actionRecord.Error = err.Error()
 			record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("❌ %s %s failed: %v", d.Symbol, d.Action, err))
 		} else {

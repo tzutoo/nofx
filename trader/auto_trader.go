@@ -185,10 +185,12 @@ type AutoTrader struct {
 	lastResetTime         time.Time
 	stopUntil             time.Time
 	isRunning             bool
-	isRunningMutex        sync.RWMutex       // Mutex to protect isRunning flag
-	startTime             time.Time          // System start time
-	callCount             int                // AI call count
-	positionFirstSeenTime map[string]int64   // Position first seen time (symbol_side -> timestamp in milliseconds)
+	isRunningMutex        sync.RWMutex         // Mutex to protect isRunning flag
+	startTime             time.Time            // System start time
+	callCount             int                  // AI call count
+	positionFirstSeenTime map[string]int64     // Position first seen time (symbol_side -> timestamp in milliseconds)
+	openFailures          map[string]time.Time // Failed-open symbols -> failure time (retry cooldown)
+	openFailuresMu        sync.Mutex
 	stopMonitorCh         chan struct{}      // Used to stop monitoring goroutine
 	monitorWg             sync.WaitGroup     // Used to wait for monitoring goroutine to finish
 	peakPnLCache          map[string]float64 // Peak profit cache (symbol -> peak P&L percentage)
@@ -408,6 +410,7 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		callCount:             0,
 		isRunning:             false,
 		positionFirstSeenTime: make(map[string]int64),
+		openFailures:          make(map[string]time.Time),
 		stopMonitorCh:         make(chan struct{}),
 		monitorWg:             sync.WaitGroup{},
 		peakPnLCache:          make(map[string]float64),

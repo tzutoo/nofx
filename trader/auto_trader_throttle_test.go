@@ -2,6 +2,7 @@ package trader
 
 import (
 	"nofx/kernel"
+	"nofx/market"
 	"strings"
 	"testing"
 	"time"
@@ -145,5 +146,24 @@ func TestTradeThrottleBlocksOpeningAgainstExistingPosition(t *testing.T) {
 	reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "open_short"}, ctx, 0)
 	if !strings.Contains(reason, "already has an open") {
 		t.Fatalf("expected opposite open to be blocked when position exists, got %q", reason)
+	}
+}
+
+// TestFailedOpenCooldown verifies a symbol whose open failed (halted / no
+// liquidity) is skipped for the cooldown window, then becomes retryable again.
+func TestFailedOpenCooldown(t *testing.T) {
+	at := &AutoTrader{}
+	if reason := at.failedOpenCooldownReason("BTC"); reason != "" {
+		t.Fatalf("unmarked symbol should have no cooldown, got %q", reason)
+	}
+	at.markOpenFailure("BTC")
+	if reason := at.failedOpenCooldownReason("BTC"); reason == "" {
+		t.Fatal("recently-failed symbol should be in cooldown")
+	}
+	at.openFailuresMu.Lock()
+	at.openFailures[market.Normalize("BTC")] = time.Now().Add(-2 * failedOpenCooldown)
+	at.openFailuresMu.Unlock()
+	if reason := at.failedOpenCooldownReason("BTC"); reason != "" {
+		t.Fatalf("expired failure should be clear, got %q", reason)
 	}
 }

@@ -14,6 +14,11 @@ const (
 	autopilotMaxOpensPerHour  = 3
 	autopilotMaxOpensPerCycle = 2
 
+	// Skip a symbol for this long after its open fails (e.g. "Trading is halted"
+	// or "no resting orders" on a low-liquidity testnet) so the bot stops retrying
+	// an untradable name every cycle.
+	failedOpenCooldown = 30 * time.Minute
+
 	// Exit gates, validated by decision replay (2026-07-26, 4154 cycles,
 	// 3-fold robustness): gates beat no-gates by 34 pts and the old rigid
 	// 4h/8h by 16 pts of worst-fold score; the searched optimum sits at these
@@ -22,12 +27,47 @@ const (
 	autopilotNoiseCloseHoldDuration = 3 * time.Hour
 	// Re-entering a just-closed symbol was a consistent loss source: the
 	// replay's top-20 configs cluster tightly at ~4h.
-	autopilotReentryCooldown        = 4 * time.Hour
-	earlyCloseStopLossBypassPct     = -3.0
-	earlyCloseTakeProfitBypassPct   = 8.0
-	noiseCloseLossFloorPct          = -2.0
-	noiseCloseProfitCeilingPct      = 3.0
+	autopilotReentryCooldown      = 4 * time.Hour
+	earlyCloseStopLossBypassPct   = -3.0
+	earlyCloseTakeProfitBypassPct = 8.0
+	noiseCloseLossFloorPct        = -2.0
+	noiseCloseProfitCeilingPct    = 3.0
 )
+
+// markOpenFailure records that a symbol's open just failed so it is skipped for
+// failedOpenCooldown before being retried.
+func (at *AutoTrader) markOpenFailure(symbol string) {
+	sym := market.Normalize(strings.TrimSpace(symbol))
+	if sym == "" {
+		return
+	}
+	at.openFailuresMu.Lock()
+	if at.openFailures == nil {
+		at.openFailures = make(map[string]time.Time)
+	}
+	at.openFailures[sym] = time.Now()
+	at.openFailuresMu.Unlock()
+}
+
+// failedOpenCooldownReason returns a non-empty reason when the symbol's last open
+// failed within failedOpenCooldown, so it should be skipped this cycle.
+func (at *AutoTrader) failedOpenCooldownReason(symbol string) string {
+	sym := market.Normalize(strings.TrimSpace(symbol))
+	if sym == "" {
+		return ""
+	}
+	at.openFailuresMu.Lock()
+	failAt, ok := at.openFailures[sym]
+	at.openFailuresMu.Unlock()
+	if !ok {
+		return ""
+	}
+	remaining := failedOpenCooldown - time.Since(failAt)
+	if remaining <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("open failed recently (halted or no liquidity); retry in %s", remaining.Round(time.Minute))
+}
 
 // positionPricePnLPct converts the margin-based UnrealizedPnLPct reported for
 // a position into the underlying price-move percentage.
