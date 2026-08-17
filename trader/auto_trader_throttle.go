@@ -23,6 +23,10 @@ const (
 	// 3-fold robustness): gates beat no-gates by 34 pts and the old rigid
 	// 4h/8h by 16 pts of worst-fold score; the searched optimum sits at these
 	// values. Thresholds are PRICE-move percentages (leverage-independent).
+	// Loss-side fail-open: when a position's actual exchange SL distance is
+	// known (see positionStopLossDistancePct), any loss-cut cheaper than that
+	// SL is never throttled — the fixed loss thresholds below are only the
+	// fallback when no SL is known. Win-side thresholds stay fixed.
 	autopilotMinHoldDuration        = 90 * time.Minute
 	autopilotNoiseCloseHoldDuration = 3 * time.Hour
 	// Re-entering a just-closed symbol was a consistent loss source: the
@@ -67,6 +71,29 @@ func (at *AutoTrader) failedOpenCooldownReason(symbol string) string {
 		return ""
 	}
 	return fmt.Sprintf("open failed recently (halted or no liquidity); retry in %s", remaining.Round(time.Minute))
+}
+
+// positionStopLossDistancePct returns the price-% distance from entry to the
+// position's actual placed exchange SL (positive), or 0 when it is not known
+// (no trail state for the position). The actual SL is ATR-derived
+// (1.5×ATR14 beyond entry) and accounts for any trailing ratchet, so it is the
+// correct "never throttle a loss-cut cheaper than the SL" boundary. Deriving it
+// from the placed SL is more correct than ATR×multiplier and needs no fresh
+// network call per close decision.
+func (at *AutoTrader) positionStopLossDistancePct(symbol, side string) float64 {
+	if at == nil {
+		return 0
+	}
+	at.trailStateMu.Lock()
+	state, ok := at.trailState[positionKey(symbol, side)]
+	at.trailStateMu.Unlock()
+	if !ok || state.entry <= 0 || state.stop <= 0 || state.stop == state.entry {
+		return 0
+	}
+	if state.stop > state.entry {
+		return (state.stop - state.entry) / state.entry * 100
+	}
+	return (state.entry - state.stop) / state.entry * 100
 }
 
 // positionPricePnLPct converts the margin-based UnrealizedPnLPct reported for
@@ -188,6 +215,12 @@ func (at *AutoTrader) closeThrottleReason(decision kernel.Decision, ctx *kernel.
 		entryTime = pos.UpdateTime
 	}
 
+	// Loss-side fail-open: when the position's actual exchange SL distance is
+	// known, never throttle a loss-cut that is cheaper than letting the SL fire
+	// (any loss cheaper than the SL passes; deeper losses are moot — the SL
+	// fires anyway). Without a known SL we fall back to the fixed thresholds.
+	lossFailOpen := at.positionStopLossDistancePct(symbol, side) > 0
+
 	if order := at.findRecentOpenOrder(symbol, side, time.Now().Add(-autopilotNoiseCloseHoldDuration)); order != nil && order.CreatedAt > entryTime {
 		entryTime = order.CreatedAt
 	}
@@ -201,6 +234,7 @@ func (at *AutoTrader) closeThrottleReason(decision kernel.Decision, ctx *kernel.
 	}
 	if heldFor >= autopilotMinHoldDuration {
 		if heldFor >= autopilotNoiseCloseHoldDuration ||
+			(lossFailOpen && pnlPct < 0) ||
 			pnlPct <= noiseCloseLossFloorPct ||
 			pnlPct >= noiseCloseProfitCeilingPct {
 			return ""
@@ -220,7 +254,9 @@ func (at *AutoTrader) closeThrottleReason(decision kernel.Decision, ctx *kernel.
 	}
 
 	// Do not block true risk exits or unusually strong take-profit exits.
-	if pnlPct <= earlyCloseStopLossBypassPct || pnlPct >= earlyCloseTakeProfitBypassPct {
+	if (lossFailOpen && pnlPct < 0) ||
+		pnlPct <= earlyCloseStopLossBypassPct ||
+		pnlPct >= earlyCloseTakeProfitBypassPct {
 		return ""
 	}
 

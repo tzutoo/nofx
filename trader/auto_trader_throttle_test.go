@@ -101,6 +101,56 @@ func TestTradeThrottleAllowsConfirmedLossAfterMinimumHold(t *testing.T) {
 	}
 }
 
+// TestTradeThrottleAllowsLossCutCheaperThanStopLoss verifies the loss-side
+// fail-open: when the position's actual exchange SL distance is known (from the
+// trail state — the ATR-derived 1.5×ATR stop), an AI loss-cut that is cheaper
+// than letting the SL fire is never throttled, even inside the min-hold / noise
+// windows. Without a known SL the fixed thresholds still apply (covered by the
+// other tests).
+func TestTradeThrottleAllowsLossCutCheaperThanStopLoss(t *testing.T) {
+	at := &AutoTrader{}
+	key := positionKey("xyz:INTC", "long")
+	// Actual placed exchange SL 2.25% below entry (≈ 1.5×ATR for ATR≈1.5%).
+	at.trailState = map[string]trailingStopState{
+		key: {entry: 100, stop: 97.75, tp: 103},
+	}
+
+	// -0.86% loss-cut inside the min-hold: cheaper than the -2.25% SL → allowed.
+	ctx := throttleContext("xyz:INTC", "long", 20*time.Minute, -0.86)
+	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0); reason != "" {
+		t.Fatalf("expected loss-cut cheaper than the SL to pass inside min-hold, got %q", reason)
+	}
+
+	// Same loss-cut past the min-hold but inside the noise window → still allowed.
+	ctx = throttleContext("xyz:INTC", "long", 2*time.Hour, -0.86)
+	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0); reason != "" {
+		t.Fatalf("expected loss-cut cheaper than the SL to pass past min-hold, got %q", reason)
+	}
+
+	// A small PROFIT with a known SL is still throttled (win-side unchanged):
+	// the fail-open only covers the loss side.
+	ctx = throttleContext("xyz:INTC", "long", 2*time.Hour, 0.4)
+	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0); !strings.Contains(reason, "noise band") {
+		t.Fatalf("expected small-profit close to stay throttled despite known SL, got %q", reason)
+	}
+}
+
+// TestTradeThrottleAllowsShortLossCutCheaperThanStopLoss covers the loss-side
+// fail-open for shorts: the SL sits above entry, and a loss-cut cheaper than it
+// passes.
+func TestTradeThrottleAllowsShortLossCutCheaperThanStopLoss(t *testing.T) {
+	at := &AutoTrader{}
+	key := positionKey("xyz:INTC", "short")
+	// Short SL 2.25% above entry.
+	at.trailState = map[string]trailingStopState{
+		key: {entry: 100, stop: 102.25, tp: 97},
+	}
+	ctx := throttleContext("xyz:INTC", "short", 20*time.Minute, -0.9)
+	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_short"}, ctx, 0); reason != "" {
+		t.Fatalf("expected short loss-cut cheaper than the SL to pass, got %q", reason)
+	}
+}
+
 func TestTradeThrottleBlocksQuickReentryAfterClose(t *testing.T) {
 	// Re-entering a just-closed symbol was a consistent loss source in the
 	// replay data; the 4h cooldown is enforced from recent close orders, which
