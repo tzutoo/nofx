@@ -6,6 +6,7 @@ import (
 	"nofx/logger"
 	"nofx/market"
 	"nofx/store"
+	"strings"
 	"time"
 )
 
@@ -73,6 +74,13 @@ func (at *AutoTrader) atrTargetMultiplier() float64 {
 	return 2.0
 }
 
+func (at *AutoTrader) atrTrailMultiplier() float64 {
+	if at.config.StrategyConfig != nil && at.config.StrategyConfig.RiskControl.ATRTrailMultiplier > 0 {
+		return at.config.StrategyConfig.RiskControl.ATRTrailMultiplier
+	}
+	return 1.0
+}
+
 func (at *AutoTrader) atrTimeframe() string {
 	if at.config.StrategyConfig != nil && at.config.StrategyConfig.RiskControl.ATREligibilityTimeframe != "" {
 		return at.config.StrategyConfig.RiskControl.ATREligibilityTimeframe
@@ -100,6 +108,31 @@ func (at *AutoTrader) fetchATR14(symbol string) float64 {
 	return data.TimeframeData[tf].ATR14
 }
 
+// positionKey returns the canonical position key (symbol_side, side lowercased).
+func positionKey(symbol, side string) string {
+	return symbol + "_" + strings.ToLower(side)
+}
+
+// moveTrailingStopLoss re-places the stop-loss (ratcheted up) and re-places the
+// take-profit unchanged, because CancelStopOrders cancels coin-wide (Hyperliquid
+// cannot distinguish SL from TP). tp is the already-placed TP — never moved.
+func (at *AutoTrader) moveTrailingStopLoss(symbol string, isLong bool, quantity, newStop, tp float64) error {
+	side := "LONG"
+	if !isLong {
+		side = "SHORT"
+	}
+	if err := at.trader.CancelStopOrders(symbol); err != nil {
+		return fmt.Errorf("failed to cancel stop orders for %s: %w", symbol, err)
+	}
+	if err := at.trader.SetStopLoss(symbol, side, quantity, newStop); err != nil {
+		return fmt.Errorf("failed to move stop loss for %s to %.4f: %w", symbol, newStop, err)
+	}
+	if err := at.trader.SetTakeProfit(symbol, side, quantity, tp); err != nil {
+		return fmt.Errorf("failed to re-place take profit for %s at %.4f: %w", symbol, tp, err)
+	}
+	return nil
+}
+
 // attachStopLossTakeProfit places both reduce-only trigger orders for an open
 // position. Any failure returns immediately (position stays open on the
 // exchange — caller records the error). Called only after
@@ -111,6 +144,13 @@ func (at *AutoTrader) attachStopLossTakeProfit(symbol, side string, quantity, st
 	if err := at.trader.SetTakeProfit(symbol, side, quantity, takeProfit); err != nil {
 		return fmt.Errorf("opened %s but failed to set take profit at %.4f: %w", symbol, takeProfit, err)
 	}
+	// Record the placed SL/TP as the trail's source of truth (open-time seed).
+	at.trailStateMu.Lock()
+	if at.trailState == nil {
+		at.trailState = make(map[string]trailingStopState)
+	}
+	at.trailState[positionKey(symbol, side)] = trailingStopState{stop: stopLoss, tp: takeProfit}
+	at.trailStateMu.Unlock()
 	return nil
 }
 

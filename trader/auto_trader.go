@@ -192,6 +192,10 @@ type AutoTrader struct {
 	openFailures          map[string]time.Time // Failed-open symbols -> failure time (retry cooldown)
 	openFailuresMu        sync.Mutex
 	testnetTradableCache  map[string]bool    // Tradable symbols on the execution network (testnet filter)
+	peakPrice             map[string]float64 // symbol_side -> best (max long / min short) mark price
+	peakPriceMu           sync.RWMutex
+	trailState            map[string]trailingStopState // symbol_side -> currently-placed SL/TP
+	trailStateMu          sync.Mutex
 	stopMonitorCh         chan struct{}      // Used to stop monitoring goroutine
 	monitorWg             sync.WaitGroup     // Used to wait for monitoring goroutine to finish
 	peakPnLCache          map[string]float64 // Peak profit cache (symbol -> peak P&L percentage)
@@ -208,6 +212,14 @@ type AutoTrader struct {
 	aiWalletStatus        string             // "ok"|"low"|"empty"|"unknown" — see runtime_health.go
 	aiWalletBalanceUSDC   float64            // Last observed Base USDC balance of the claw402 wallet
 	aiWalletCheckedAt     time.Time          // When the balance was last observed
+}
+
+// trailingStopState records the currently-placed exchange SL/TP for a position,
+// used as the source of truth when the trailing stop ratchets the SL up.
+// tp is never moved by the trail (re-placed unchanged after every CancelStopOrders).
+type trailingStopState struct {
+	stop float64 // currently-placed exchange SL
+	tp   float64 // currently-placed exchange TP
 }
 
 // NewAutoTrader creates an automatic trader
@@ -412,6 +424,8 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		isRunning:             false,
 		positionFirstSeenTime: make(map[string]int64),
 		openFailures:          make(map[string]time.Time),
+		peakPrice:             make(map[string]float64),
+		trailState:            make(map[string]trailingStopState),
 		stopMonitorCh:         make(chan struct{}),
 		monitorWg:             sync.WaitGroup{},
 		peakPnLCache:          make(map[string]float64),

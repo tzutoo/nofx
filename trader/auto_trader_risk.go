@@ -2,6 +2,7 @@ package trader
 
 import (
 	"fmt"
+	"math"
 	"nofx/kernel"
 	"nofx/logger"
 	"nofx/market"
@@ -11,12 +12,13 @@ import (
 )
 
 const (
-	// The monitor arms only once the underlying PRICE has moved +5% in the
-	// position's favor (leverage-independent — at 10x the old margin-basis
-	// check armed at a +0.5% price wiggle and strangled every winner), then
-	// closes if the position gives back 40% of its peak profit.
-	drawdownClosePriceGainPct = 5.0
-	drawdownCloseGivebackPct  = 40.0
+	// The monitor arms once the underlying PRICE has moved ~1×ATR in the
+	// position's favor (ATR-relative, per-coin via drawdownArmPct), then closes
+	// if the position gives back 40% of its peak profit. The old flat +5% arm
+	// was unreachable for ATR scalps (TP ≈ +2–3%).
+	drawdownCloseGivebackPct = 40.0
+	// Fixed fallback arming % when ATR is unavailable.
+	drawdownArmFallbackPct = 1.5
 
 	// Drawdown size-trim (#2): as equity falls from its account peak, shrink the
 	// position-value multiplier so a losing streak risks progressively less.
@@ -27,10 +29,24 @@ const (
 )
 
 // shouldDrawdownClose reports whether the profit-protection close should fire.
-// pricePnLPct is the price-basis move in the position's favor; drawdownPct is
-// the relative giveback from the position's peak profit.
-func shouldDrawdownClose(pricePnLPct, drawdownPct float64) bool {
-	return pricePnLPct > drawdownClosePriceGainPct && drawdownPct >= drawdownCloseGivebackPct
+// pricePnLPct is the price-basis move in the position's favor; armPct is the
+// ATR-relative arming threshold; drawdownPct is the relative giveback from the
+// position's peak profit.
+func shouldDrawdownClose(pricePnLPct, armPct, drawdownPct float64) bool {
+	return pricePnLPct > armPct && drawdownPct >= drawdownCloseGivebackPct
+}
+
+// drawdownArmPct returns the ATR-relative arming threshold (1×ATR14 as % of
+// entry, floored at 1%) for a position, falling back to a fixed 1.5% when ATR
+// or entry is unavailable.
+func (at *AutoTrader) drawdownArmPct(entryPrice, atr14 float64) float64 {
+	if entryPrice > 0 && atr14 > 0 {
+		pct := atr14 / entryPrice * 100
+		if pct >= 1.0 {
+			return pct
+		}
+	}
+	return drawdownArmFallbackPct
 }
 
 // startDrawdownMonitor starts drawdown monitoring
@@ -47,7 +63,14 @@ func (at *AutoTrader) startDrawdownMonitor() {
 		for {
 			select {
 			case <-ticker.C:
-				at.checkPositionDrawdown()
+				positions, err := at.trader.GetPositions()
+				if err != nil {
+					logger.Infof("❌ Drawdown monitoring: failed to get positions: %v", err)
+					continue
+				}
+				atrCache := make(map[string]float64)
+				closed := at.checkPositionDrawdown(positions, atrCache)
+				at.checkTrailingStops(positions, atrCache, closed)
 			case <-at.stopMonitorCh:
 				logger.Info("⏹ Stopped position drawdown monitoring")
 				return
@@ -56,15 +79,10 @@ func (at *AutoTrader) startDrawdownMonitor() {
 	}()
 }
 
-// checkPositionDrawdown checks position drawdown situation
-func (at *AutoTrader) checkPositionDrawdown() {
-	// Get current positions
-	positions, err := at.trader.GetPositions()
-	if err != nil {
-		logger.Infof("❌ Drawdown monitoring: failed to get positions: %v", err)
-		return
-	}
-
+// checkPositionDrawdown checks position drawdown situation. It returns the set
+// of positions (symbol_side keys) closed this tick so the trail loop skips them.
+func (at *AutoTrader) checkPositionDrawdown(positions []map[string]interface{}, atrCache map[string]float64) map[string]bool {
+	closed := make(map[string]bool)
 	for _, pos := range positions {
 		symbol := pos["symbol"].(string)
 		side := pos["side"].(string)
@@ -100,7 +118,7 @@ func (at *AutoTrader) checkPositionDrawdown() {
 		currentPnLPct := pricePnLPct * float64(leverage)
 
 		// Construct unique position identifier (distinguish long/short)
-		posKey := symbol + "_" + side
+		posKey := positionKey(symbol, side)
 
 		// Get historical peak profit for this position
 		at.peakPnLCacheMutex.RLock()
@@ -122,8 +140,10 @@ func (at *AutoTrader) checkPositionDrawdown() {
 			drawdownPct = ((peakPnLPct - currentPnLPct) / peakPnLPct) * 100
 		}
 
-		// Check close position condition: price move > +5% and drawdown >= 40%
-		if shouldDrawdownClose(pricePnLPct, drawdownPct) {
+		armPct := at.drawdownArmPct(entryPrice, at.atrForSymbol(atrCache, symbol))
+
+		// Check close position condition: price move > armPct and drawdown >= 40%
+		if shouldDrawdownClose(pricePnLPct, armPct, drawdownPct) {
 			logger.Infof("🚨 Drawdown close position condition triggered: %s %s | Price move: %.2f%% | Current profit: %.2f%% | Peak profit: %.2f%% | Drawdown: %.2f%%",
 				symbol, side, pricePnLPct, currentPnLPct, peakPnLPct, drawdownPct)
 
@@ -134,13 +154,150 @@ func (at *AutoTrader) checkPositionDrawdown() {
 				logger.Infof("✅ Drawdown close position succeeded: %s %s", symbol, side)
 				// Clear cache for this position after closing
 				at.ClearPeakPnLCache(symbol, side)
+				closed[posKey] = true
 			}
-		} else if pricePnLPct > drawdownClosePriceGainPct {
+		} else if pricePnLPct > armPct {
 			// Record situations close to close position condition (for debugging)
 			logger.Infof("📊 Drawdown monitoring: %s %s | Price move: %.2f%% | Profit: %.2f%% | Peak: %.2f%% | Drawdown: %.2f%%",
 				symbol, side, pricePnLPct, currentPnLPct, peakPnLPct, drawdownPct)
 		}
 	}
+	return closed
+}
+
+// atrForSymbol returns the 15m ATR14 for a symbol, cached per tick in atrCache.
+func (at *AutoTrader) atrForSymbol(atrCache map[string]float64, symbol string) float64 {
+	if v, ok := atrCache[symbol]; ok {
+		return v
+	}
+	v := at.fetchATR14(symbol)
+	atrCache[symbol] = v
+	return v
+}
+
+// checkTrailingStops ratchets the exchange stop-loss up (break-even at +1×ATR,
+// then 1×ATR behind peak) for winning positions. It never touches TP.
+func (at *AutoTrader) checkTrailingStops(positions []map[string]interface{}, atrCache map[string]float64, closed map[string]bool) {
+	if len(positions) == 0 {
+		return
+	}
+	seen := make(map[string]bool)
+	for _, pos := range positions {
+		symbol := pos["symbol"].(string)
+		side := strings.ToLower(pos["side"].(string))
+		entryPrice := pos["entryPrice"].(float64)
+		markPrice := pos["markPrice"].(float64)
+		quantity := pos["positionAmt"].(float64)
+		if quantity < 0 {
+			quantity = -quantity
+		}
+		if entryPrice <= 0 {
+			continue
+		}
+		isLong := side == "long"
+		posKey := positionKey(symbol, side)
+		seen[posKey] = true
+		if closed[posKey] {
+			continue // closed by the drawdown check this tick
+		}
+
+		// Peak-price update (monotonic; first-seen = mark).
+		at.peakPriceMu.Lock()
+		if at.peakPrice == nil {
+			at.peakPrice = make(map[string]float64)
+		}
+		peak, exists := at.peakPrice[posKey]
+		if !exists {
+			peak = markPrice
+		} else if isLong {
+			if markPrice > peak {
+				peak = markPrice
+			}
+		} else {
+			if markPrice < peak {
+				peak = markPrice
+			}
+		}
+		at.peakPrice[posKey] = peak
+		at.peakPriceMu.Unlock()
+
+		// ATR (fail-closed: no trail action without volatility data).
+		atr14 := at.atrForSymbol(atrCache, symbol)
+		if atr14 <= 0 {
+			continue
+		}
+
+		// Seed trailState if absent (restart fallback).
+		at.trailStateMu.Lock()
+		if at.trailState == nil {
+			at.trailState = make(map[string]trailingStopState)
+		}
+		state, hasState := at.trailState[posKey]
+		if !hasState {
+			if stop, tp, ok := kernel.ATRStopTarget(entryPrice, atr14, at.atrStopMultiplier(), at.atrTargetMultiplier(), isLong); ok {
+				state = trailingStopState{stop: stop, tp: tp}
+				at.trailState[posKey] = state
+			} else {
+				at.trailStateMu.Unlock()
+				continue
+			}
+		}
+		at.trailStateMu.Unlock()
+
+		// Trail candidate (arm at +1×ATR, trail 1×ATR behind peak).
+		trail, ok := kernel.TrailStopTarget(entryPrice, peak, atr14, at.atrTrailMultiplier(), isLong)
+		if !ok {
+			continue // not yet armed
+		}
+
+		// Ratchet: only tighten toward the peak.
+		var newStop float64
+		if isLong {
+			if trail <= state.stop {
+				continue
+			}
+			newStop = trail
+		} else {
+			if trail >= state.stop {
+				continue
+			}
+			newStop = trail
+		}
+
+		// Epsilon gate: avoid churn from floating-point noise.
+		if math.Abs((newStop-state.stop)/entryPrice) <= 1e-4 {
+			continue
+		}
+
+		// Move (cancel + re-place SL + re-place TP).
+		if err := at.moveTrailingStopLoss(symbol, isLong, quantity, newStop, state.tp); err != nil {
+			logger.Infof("❌ Trailing stop move failed (%s %s): %v", symbol, side, err)
+			continue // state not updated -> retry next tick
+		}
+		at.trailStateMu.Lock()
+		if s, ok := at.trailState[posKey]; ok {
+			s.stop = newStop
+			at.trailState[posKey] = s
+		}
+		at.trailStateMu.Unlock()
+		logger.Infof("🎯 Trailing stop ratcheted %s %s: %.4f -> %.4f (peak %.4f, ATR %.4f)", symbol, side, state.stop, newStop, peak, atr14)
+	}
+
+	// GC: prune keys not in the current position set (every close path).
+	at.peakPriceMu.Lock()
+	for k := range at.peakPrice {
+		if !seen[k] {
+			delete(at.peakPrice, k)
+		}
+	}
+	at.peakPriceMu.Unlock()
+	at.trailStateMu.Lock()
+	for k := range at.trailState {
+		if !seen[k] {
+			delete(at.trailState, k)
+		}
+	}
+	at.trailStateMu.Unlock()
 }
 
 // emergencyClosePosition emergency close position function

@@ -36,6 +36,40 @@ func TestATRStopTarget(t *testing.T) {
 	}
 }
 
+// TestTrailStopTarget verifies the side-aware trailing-stop level: not armed
+// below +1×ATR, break-even at the arming instant, then 1×ATR behind peak.
+func TestTrailStopTarget(t *testing.T) {
+	// Long: not armed below +1×ATR.
+	if _, ok := TrailStopTarget(100, 101, 2, 1.0, true); ok {
+		t.Fatal("long should not arm below +1×ATR")
+	}
+	// Long: at peak = entry + 1×ATR -> trail = entry (break-even).
+	if trail, ok := TrailStopTarget(100, 102, 2, 1.0, true); !ok || trail != 100 {
+		t.Fatalf("long break-even trail = %.2f ok=%v, want 100 true", trail, ok)
+	}
+	// Long: trail 1×ATR behind a higher peak.
+	if trail, ok := TrailStopTarget(100, 105, 2, 1.0, true); !ok || trail != 103 {
+		t.Fatalf("long trail = %.2f ok=%v, want 103 true", trail, ok)
+	}
+	// Short: mirror.
+	if _, ok := TrailStopTarget(100, 99, 2, 1.0, false); ok {
+		t.Fatal("short should not arm below +1×ATR")
+	}
+	if trail, ok := TrailStopTarget(100, 98, 2, 1.0, false); !ok || trail != 100 {
+		t.Fatalf("short break-even trail = %.2f ok=%v, want 100 true", trail, ok)
+	}
+	if trail, ok := TrailStopTarget(100, 95, 2, 1.0, false); !ok || trail != 97 {
+		t.Fatalf("short trail = %.2f ok=%v, want 97 true", trail, ok)
+	}
+	// Degenerate: atr14 <= 0 / mult <= 0 invalid.
+	if _, ok := TrailStopTarget(100, 102, 0, 1.0, true); ok {
+		t.Fatal("atr14<=0 should be invalid")
+	}
+	if _, ok := TrailStopTarget(100, 102, 2, 0, true); ok {
+		t.Fatal("mult<=0 should be invalid")
+	}
+}
+
 // TestValidateDecisionConfigRRLower proves the R/R floor is config-driven (was
 // hardcoded 3.0). The synthetic 20%-of-span inferred entry makes R/R a constant
 // 4.0 for any valid SL/TP pair, so a floor of 1.2 or 3.0 both pass while a floor

@@ -61,6 +61,32 @@ func ATRStopTarget(entryPrice, atr14, stopMult, targetMult float64, isLong bool)
 	return stop, target, true
 }
 
+// TrailStopTarget returns the trailing-stop level for a position: long = peak −
+// mult·atr14, short = peak + mult·atr14. It arms only once the position is at
+// least mult×ATR in profit (long peak ≥ entry + mult·atr14, short peak ≤ entry −
+// mult·atr14); at the instant of arming the trail equals entry (break-even).
+// ok=false when atr14<=0 or the trail level would be <=0 (caller takes no action).
+func TrailStopTarget(entry, peak, atr14, mult float64, isLong bool) (trail float64, ok bool) {
+	if entry <= 0 || peak <= 0 || atr14 <= 0 || mult <= 0 {
+		return 0, false
+	}
+	if isLong {
+		if peak < entry+mult*atr14 {
+			return 0, false // not yet armed
+		}
+		trail = peak - mult*atr14
+	} else {
+		if peak > entry-mult*atr14 {
+			return 0, false // not yet armed
+		}
+		trail = peak + mult*atr14
+	}
+	if trail <= 0 {
+		return 0, false
+	}
+	return trail, true
+}
+
 func validateDecisions(decisions []Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio, riskPerTradePct, minRiskRewardRatio float64) error {
 	for i := range decisions {
 		if err := validateDecision(&decisions[i], accountEquity, btcEthLeverage, altcoinLeverage, btcEthPosRatio, altcoinPosRatio, riskPerTradePct, minRiskRewardRatio); err != nil {

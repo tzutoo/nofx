@@ -40,6 +40,8 @@ const (
 	MaxATRTargetMultiplier  = 10.0
 	MinATREligibilityCapPct = 0.5
 	MaxATREligibilityCapPct = 10.0
+	MinATRTrailMultiplier   = 0.5
+	MaxATRTrailMultiplier   = 10.0
 )
 
 // ClampLimits enforces product-level limits on strategy config to prevent token overflow.
@@ -154,6 +156,15 @@ func (c *StrategyConfig) ClampLimits() {
 		}
 		if c.RiskControl.ATRTargetMultiplier > MaxATRTargetMultiplier {
 			c.RiskControl.ATRTargetMultiplier = MaxATRTargetMultiplier
+		}
+	}
+	// Clamp the ATR trail multiplier (0 = use default).
+	if c.RiskControl.ATRTrailMultiplier > 0 {
+		if c.RiskControl.ATRTrailMultiplier < MinATRTrailMultiplier {
+			c.RiskControl.ATRTrailMultiplier = MinATRTrailMultiplier
+		}
+		if c.RiskControl.ATRTrailMultiplier > MaxATRTrailMultiplier {
+			c.RiskControl.ATRTrailMultiplier = MaxATRTrailMultiplier
 		}
 	}
 	// Clamp ATR eligibility cap (<=0 disables); normalize the timeframe string.
@@ -637,6 +648,7 @@ func StrategyClampWarnings(before, after StrategyConfig, lang string) []string {
 	appendFloat("Min Risk/Reward Ratio", "min_risk_reward_ratio", before.RiskControl.MinRiskRewardRatio, after.RiskControl.MinRiskRewardRatio)
 	appendFloat("Max Margin Usage", "max_margin_usage", before.RiskControl.MaxMarginUsage, after.RiskControl.MaxMarginUsage)
 	appendFloat("Min Position Size", "min_position_size", before.RiskControl.MinPositionSize, after.RiskControl.MinPositionSize)
+	appendFloat("ATR Trail Multiplier", "atr_trail_multiplier", before.RiskControl.ATRTrailMultiplier, after.RiskControl.ATRTrailMultiplier)
 	appendInt("Min Confidence", "min_confidence", before.RiskControl.MinConfidence, after.RiskControl.MinConfidence)
 	return warnings
 }
@@ -999,6 +1011,8 @@ type RiskControlConfig struct {
 	// target = entry ± ATRTargetMultiplier×ATR14. 0 = use default.
 	ATRStopMultiplier   float64 `json:"atr_stop_multiplier"`
 	ATRTargetMultiplier float64 `json:"atr_target_multiplier"`
+	// Trailing-stop trail distance = trail SL at peak ∓ this×ATR14 (0 = use default).
+	ATRTrailMultiplier float64 `json:"atr_trail_multiplier"`
 	// Hard-exclude coins whose ATR%/price on ATREligibilityTimeframe exceeds this
 	// cap (0 disables the filter).
 	ATREligibilityCapPct    float64 `json:"atr_eligibility_cap_pct"`
@@ -1100,6 +1114,7 @@ func GetDefaultStrategyConfig(lang string) StrategyConfig {
 			ATRTargetMultiplier:          2.0, // target = entry ± 2×ATR14 (R/R ≈ 1.33)
 			ATREligibilityCapPct:         3.0, // hard-exclude coins with 15m ATR%/price > 3%
 			ATREligibilityTimeframe:      "15m",
+			ATRTrailMultiplier:           1.0, // trail SL at peak ∓ 1×ATR14 (profit lock)
 		},
 	}
 
