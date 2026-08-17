@@ -137,7 +137,7 @@ func (at *AutoTrader) moveTrailingStopLoss(symbol string, isLong bool, quantity,
 // position. Any failure returns immediately (position stays open on the
 // exchange — caller records the error). Called only after
 // ensureStopLossTakeProfitDefaults, so prices are always > 0.
-func (at *AutoTrader) attachStopLossTakeProfit(symbol, side string, quantity, stopLoss, takeProfit float64) error {
+func (at *AutoTrader) attachStopLossTakeProfit(symbol, side string, quantity, entryPrice, stopLoss, takeProfit float64) error {
 	if err := at.trader.SetStopLoss(symbol, side, quantity, stopLoss); err != nil {
 		return fmt.Errorf("opened %s but failed to set stop loss at %.4f: %w", symbol, stopLoss, err)
 	}
@@ -149,7 +149,7 @@ func (at *AutoTrader) attachStopLossTakeProfit(symbol, side string, quantity, st
 	if at.trailState == nil {
 		at.trailState = make(map[string]trailingStopState)
 	}
-	at.trailState[positionKey(symbol, side)] = trailingStopState{stop: stopLoss, tp: takeProfit}
+	at.trailState[positionKey(symbol, side)] = trailingStopState{entry: entryPrice, stop: stopLoss, tp: takeProfit}
 	at.trailStateMu.Unlock()
 	return nil
 }
@@ -291,7 +291,7 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
 	// Set stop loss and take profit (fatal: never leave an open position unprotected)
-	if err := at.attachStopLossTakeProfit(decision.Symbol, "LONG", quantity, decision.StopLoss, decision.TakeProfit); err != nil {
+	if err := at.attachStopLossTakeProfit(decision.Symbol, "LONG", quantity, marketData.CurrentPrice, decision.StopLoss, decision.TakeProfit); err != nil {
 		return err
 	}
 
@@ -416,7 +416,7 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
 	// Set stop loss and take profit (fatal: never leave an open position unprotected)
-	if err := at.attachStopLossTakeProfit(decision.Symbol, "SHORT", quantity, decision.StopLoss, decision.TakeProfit); err != nil {
+	if err := at.attachStopLossTakeProfit(decision.Symbol, "SHORT", quantity, marketData.CurrentPrice, decision.StopLoss, decision.TakeProfit); err != nil {
 		return err
 	}
 

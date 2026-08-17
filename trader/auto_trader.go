@@ -194,6 +194,7 @@ type AutoTrader struct {
 	testnetTradableCache  map[string]bool    // Tradable symbols on the execution network (testnet filter)
 	peakPrice             map[string]float64 // symbol_side -> best (max long / min short) mark price
 	peakPriceMu           sync.RWMutex
+	lastMarkPrice         map[string]float64           // symbol_side -> last observed mark (guarded by peakPriceMu)
 	trailState            map[string]trailingStopState // symbol_side -> currently-placed SL/TP
 	trailStateMu          sync.Mutex
 	stopMonitorCh         chan struct{}      // Used to stop monitoring goroutine
@@ -218,8 +219,9 @@ type AutoTrader struct {
 // used as the source of truth when the trailing stop ratchets the SL up.
 // tp is never moved by the trail (re-placed unchanged after every CancelStopOrders).
 type trailingStopState struct {
-	stop float64 // currently-placed exchange SL
-	tp   float64 // currently-placed exchange TP
+	entry float64 // entry price (for exit-outcome logging)
+	stop  float64 // currently-placed exchange SL
+	tp    float64 // currently-placed exchange TP
 }
 
 // NewAutoTrader creates an automatic trader
@@ -425,6 +427,7 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		positionFirstSeenTime: make(map[string]int64),
 		openFailures:          make(map[string]time.Time),
 		peakPrice:             make(map[string]float64),
+		lastMarkPrice:         make(map[string]float64),
 		trailState:            make(map[string]trailingStopState),
 		stopMonitorCh:         make(chan struct{}),
 		monitorWg:             sync.WaitGroup{},

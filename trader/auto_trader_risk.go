@@ -219,6 +219,10 @@ func (at *AutoTrader) checkTrailingStops(positions []map[string]interface{}, atr
 			}
 		}
 		at.peakPrice[posKey] = peak
+		if at.lastMarkPrice == nil {
+			at.lastMarkPrice = make(map[string]float64)
+		}
+		at.lastMarkPrice[posKey] = markPrice
 		at.peakPriceMu.Unlock()
 
 		// ATR (fail-closed: no trail action without volatility data).
@@ -235,7 +239,7 @@ func (at *AutoTrader) checkTrailingStops(positions []map[string]interface{}, atr
 		state, hasState := at.trailState[posKey]
 		if !hasState {
 			if stop, tp, ok := kernel.ATRStopTarget(entryPrice, atr14, at.atrStopMultiplier(), at.atrTargetMultiplier(), isLong); ok {
-				state = trailingStopState{stop: stop, tp: tp}
+				state = trailingStopState{entry: entryPrice, stop: stop, tp: tp}
 				at.trailState[posKey] = state
 			} else {
 				at.trailStateMu.Unlock()
@@ -283,11 +287,28 @@ func (at *AutoTrader) checkTrailingStops(positions []map[string]interface{}, atr
 		logger.Infof("🎯 Trailing stop ratcheted %s %s: %.4f -> %.4f (peak %.4f, ATR %.4f)", symbol, side, state.stop, newStop, peak, atr14)
 	}
 
-	// GC: prune keys not in the current position set (every close path).
+	// GC: log exits for positions that disappeared, then prune their state.
+	at.trailStateMu.Lock()
+	var gone []string
+	for k := range at.trailState {
+		if !seen[k] {
+			gone = append(gone, k)
+		}
+	}
+	at.trailStateMu.Unlock()
+	for _, k := range gone {
+		at.logPositionExit(k)
+	}
+
 	at.peakPriceMu.Lock()
 	for k := range at.peakPrice {
 		if !seen[k] {
 			delete(at.peakPrice, k)
+		}
+	}
+	for k := range at.lastMarkPrice {
+		if !seen[k] {
+			delete(at.lastMarkPrice, k)
 		}
 	}
 	at.peakPriceMu.Unlock()
@@ -298,6 +319,41 @@ func (at *AutoTrader) checkTrailingStops(positions []map[string]interface{}, atr
 		}
 	}
 	at.trailStateMu.Unlock()
+}
+
+// logPositionExit logs a clean, greppable exit-outcome line when a position
+// disappears (SL/TP/trail filled on the exchange). Reason is inferred: TP if the
+// peak reached the TP, trailing_stop if the SL was ratcheted past entry, else
+// stop_loss.
+func (at *AutoTrader) logPositionExit(key string) {
+	at.trailStateMu.Lock()
+	state, ok := at.trailState[key]
+	at.trailStateMu.Unlock()
+	if !ok {
+		return
+	}
+	at.peakPriceMu.RLock()
+	peak := at.peakPrice[key]
+	lastMark := at.lastMarkPrice[key]
+	at.peakPriceMu.RUnlock()
+
+	reason := "stop_loss"
+	if strings.HasSuffix(key, "_long") {
+		if peak >= state.tp {
+			reason = "take_profit"
+		} else if state.stop >= state.entry {
+			reason = "trailing_stop"
+		}
+	} else {
+		if peak <= state.tp {
+			reason = "take_profit"
+		} else if state.stop <= state.entry {
+			reason = "trailing_stop"
+		}
+	}
+
+	logger.Infof("🏁 EXIT %s: reason=%s entry=%.6f exit=%.6f peak=%.6f stop=%.6f tp=%.6f",
+		key, reason, state.entry, lastMark, peak, state.stop, state.tp)
 }
 
 // emergencyClosePosition emergency close position function
