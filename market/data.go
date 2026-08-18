@@ -46,7 +46,7 @@ func GetWithExchange(symbol, exchange string) (*Data, error) {
 	// Get 3-minute K-line data (or 5-minute for xyz assets as 3m may not be available)
 	if useHyperliquidAPI {
 		// Use Hyperliquid API for xyz dex assets (use 5m since 3m may not be available)
-		klines3m, err = getKlinesFromHyperliquid(symbol, "5m", 100)
+		klines3m, err = getKlinesFromHyperliquid(symbol, "5m", 100, false)
 		if err != nil {
 			return nil, fmt.Errorf("Failed to get 5-minute K-line from Hyperliquid: %v", err)
 		}
@@ -66,7 +66,7 @@ func GetWithExchange(symbol, exchange string) (*Data, error) {
 
 	// Get 4-hour K-line data
 	if useHyperliquidAPI {
-		klines4h, err = getKlinesFromHyperliquid(symbol, "4h", 100)
+		klines4h, err = getKlinesFromHyperliquid(symbol, "4h", 100, false)
 		if err != nil {
 			return nil, fmt.Errorf("Failed to get 4-hour K-line from Hyperliquid: %v", err)
 		}
@@ -142,10 +142,19 @@ func GetWithExchange(symbol, exchange string) (*Data, error) {
 }
 
 // GetWithTimeframes retrieves market data for specified multiple timeframes
+// (mainnet data sources).
+func GetWithTimeframes(symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
+	return GetWithTimeframesForNetwork(symbol, timeframes, primaryTimeframe, count, false)
+}
+
+// GetWithTimeframesForNetwork retrieves market data for specified multiple
+// timeframes, optionally from the Hyperliquid testnet endpoint when testnet is
+// true. On testnet both crypto and xyz symbols are routed through the
+// Hyperliquid testnet universe (never mainnet CoinAnk).
 // timeframes: list of timeframes, e.g. ["5m", "15m", "1h", "4h"]
 // primaryTimeframe: primary timeframe (used for calculating current indicators), defaults to timeframes[0]
 // count: number of K-lines for each timeframe
-func GetWithTimeframes(symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
+func GetWithTimeframesForNetwork(symbol string, timeframes []string, primaryTimeframe string, count int, testnet bool) (*Data, error) {
 	symbol = Normalize(symbol)
 
 	if len(timeframes) == 0 {
@@ -181,9 +190,19 @@ func GetWithTimeframes(symbol string, timeframes []string, primaryTimeframe stri
 		var klines []Kline
 		var err error
 
-		if isXyzAsset {
+		if testnet {
+			// Testnet: route BOTH crypto and xyz symbols through the Hyperliquid
+			// testnet endpoint (it has its own perp universe). If it returns no
+			// candles for a symbol, fail gracefully below — do NOT fall back to
+			// mainnet CoinAnk for testnet.
+			klines, err = getKlinesFromHyperliquid(symbol, tf, 200, true)
+			if err != nil {
+				logger.Infof("⚠️ Failed to get %s %s K-line from Hyperliquid testnet: %v", symbol, tf, err)
+				continue
+			}
+		} else if isXyzAsset {
 			// Use Hyperliquid API for xyz dex assets
-			klines, err = getKlinesFromHyperliquid(symbol, tf, 200)
+			klines, err = getKlinesFromHyperliquid(symbol, tf, 200, false)
 			if err != nil {
 				logger.Infof("⚠️ Failed to get %s %s K-line from Hyperliquid: %v", symbol, tf, err)
 				continue

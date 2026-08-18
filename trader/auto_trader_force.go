@@ -115,7 +115,11 @@ func (at *AutoTrader) ensureLongShortCoverage(decisions []kernel.Decision, ctx *
 				at.config.StrategyConfig.Indicators.Klines.PrimaryTimeframe == "15m" {
 				tf := at.atrTimeframe()
 				atr14 := 0.0
-				if md, ok := ctx.MarketDataMap[c.Symbol]; ok && md != nil && md.TimeframeData != nil && md.TimeframeData[tf] != nil {
+				if at.config.HyperliquidTestnet {
+					// Testnet: MarketDataMap ATR is mainnet-derived, so fetch a
+					// testnet-consistent ATR directly (fetchATR14 is network-aware).
+					atr14 = at.fetchATR14(c.Symbol)
+				} else if md, ok := ctx.MarketDataMap[c.Symbol]; ok && md != nil && md.TimeframeData != nil && md.TimeframeData[tf] != nil {
 					atr14 = md.TimeframeData[tf].ATR14
 				} else {
 					atr14 = at.fetchATR14(c.Symbol)

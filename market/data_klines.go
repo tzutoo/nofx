@@ -112,8 +112,10 @@ func getKlinesFromCoinAnk(symbol, interval, exchange string, limit int) ([]Kline
 	return klines, nil
 }
 
-// getKlinesFromHyperliquid fetches kline data from Hyperliquid API for xyz dex assets
-func getKlinesFromHyperliquid(symbol, interval string, limit int) ([]Kline, error) {
+// getKlinesFromHyperliquid fetches kline data from Hyperliquid API for xyz dex assets.
+// When testnet is true, it uses the Hyperliquid testnet endpoint (its own perp universe)
+// instead of mainnet.
+func getKlinesFromHyperliquid(symbol, interval string, limit int, testnet bool) ([]Kline, error) {
 	// Pass the symbol AS-IS to GetCandles. It internally calls FormatCoinForAPI
 	// which handles the xyz: prefix correctly. Stripping the prefix here was a
 	// bug: if the base symbol (e.g. "QNT") was not in our hardcoded
@@ -122,7 +124,12 @@ func getKlinesFromHyperliquid(symbol, interval string, limit int) ([]Kline, erro
 	// returns 500 for stock symbols that have no crypto perp on Hyperliquid.
 	hlInterval := hyperliquid.MapTimeframe(interval)
 
-	client := hyperliquid.NewClient()
+	var client *hyperliquid.Client
+	if testnet {
+		client = hyperliquid.NewTestnetClient()
+	} else {
+		client = hyperliquid.NewClient()
+	}
 	ctx := context.Background()
 	candles, err := client.GetCandles(ctx, symbol, hlInterval, limit)
 	if err != nil {
@@ -409,7 +416,7 @@ func GetBoxData(symbol string) (*BoxData, error) {
 	var err error
 
 	if IsXyzDexAsset(symbol) {
-		klines, err = getKlinesFromHyperliquid(symbol, "1h", LongBoxPeriod)
+		klines, err = getKlinesFromHyperliquid(symbol, "1h", LongBoxPeriod, false)
 	} else {
 		klines, err = getKlinesFromCoinAnk(symbol, "1h", "binance", LongBoxPeriod)
 	}

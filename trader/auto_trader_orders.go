@@ -101,7 +101,7 @@ func (at *AutoTrader) atrEligibilityCapPct() float64 {
 // TimeframeData[tf].ATR14 — the top-level market.Data struct has no ATR14 field.
 func (at *AutoTrader) fetchATR14(symbol string) float64 {
 	tf := at.atrTimeframe()
-	data, err := market.GetWithTimeframes(symbol, []string{tf}, tf, 30)
+	data, err := market.GetWithTimeframesForNetwork(symbol, []string{tf}, tf, 30, at.config.HyperliquidTestnet)
 	if err != nil || data == nil || data.TimeframeData == nil || data.TimeframeData[tf] == nil {
 		return 0
 	}
