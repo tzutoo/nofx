@@ -5,7 +5,6 @@ import (
 	"nofx/config"
 	"nofx/logger"
 	"nofx/mcp"
-	_ "nofx/mcp/payment"
 	_ "nofx/mcp/provider"
 	"nofx/store"
 	"nofx/telegram/agent"
@@ -275,11 +274,7 @@ func newLLMClient(st *store.Store, userID string) mcp.AIClient {
 			if apiKey != "" {
 				client := clientForProvider(model.Provider)
 				client.SetAPIKey(apiKey, model.CustomAPIURL, model.CustomModelName)
-				if isUSDCProvider(model.Provider) {
-					logger.Infof("Telegram agent: provider=%s (USDC payment) user=%s", model.Provider, userID)
-				} else {
-					logger.Infof("Telegram agent: provider=%s user=%s", model.Provider, userID)
-				}
+				logger.Infof("Telegram agent: provider=%s user=%s", model.Provider, userID)
 				return client
 			}
 		}
@@ -291,11 +286,7 @@ func newLLMClient(st *store.Store, userID string) mcp.AIClient {
 		if apiKey != "" {
 			client := clientForProvider(model.Provider)
 			client.SetAPIKey(apiKey, model.CustomAPIURL, model.CustomModelName)
-			if isUSDCProvider(model.Provider) {
-				logger.Infof("Telegram agent: provider=%s (USDC payment) user=%s", model.Provider, userID)
-			} else {
-				logger.Infof("Telegram agent: provider=%s user=%s", model.Provider, userID)
-			}
+			logger.Infof("Telegram agent: provider=%s user=%s", model.Provider, userID)
 			return client
 		}
 	}
@@ -313,11 +304,6 @@ func newLLMClient(st *store.Store, userID string) mcp.AIClient {
 		}
 	}
 	return nil
-}
-
-// isUSDCProvider returns true for providers that pay per call with USDC (x402 protocol).
-func isUSDCProvider(provider string) bool {
-	return provider == "claw402"
 }
 
 func clientForProvider(provider string) mcp.AIClient {

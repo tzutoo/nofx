@@ -12,10 +12,8 @@ services:
       # pprof profiling is bound to host loopback only; uncomment for local debug.
       # - "127.0.0.1:6060:6060"
     volumes:
-      # NOTE: .env is bind-mounted so the beginner-onboarding flow
-      # (persistBeginnerWalletEnv) can write CLAW402_WALLET_* back to the host
-      # file. Without this mount the wallet is regenerated on every container
-      # restart. For threat models where the .env file should not be reachable
+      # NOTE: .env is bind-mounted so container env changes are reflected on the
+      # host file. For threat models where the .env file should not be reachable
       # via container RCE, deploy via env vars only and remove this mount.
       - ./.env:/app/.env
       - ./data:/app/data

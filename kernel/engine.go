@@ -192,26 +192,18 @@ type StrategyEngine struct {
 }
 
 // NewStrategyEngine creates strategy execution engine.
-// The claw402WalletKey variadic is used for the vergex cost/liquidation
-// heatmap (paid claw402 x402 gateway). When empty, the client falls back to
-// the CLAW402_WALLET_KEY env var; if still unavailable the heatmap degrades to
-// the self-hosted signal service. Ranking / signal-lab / netflow always use
-// the signal service (SIGNAL_SERVICE_BASE_URL, default http://localhost:8480).
-func NewStrategyEngine(config *store.StrategyConfig, claw402WalletKey ...string) *StrategyEngine {
-	// Create NofxOS client with API key from config (direct nofxos.ai — no claw402).
+// The vergex client points at the self-hosted signal service (SIGNAL_SERVICE_BASE_URL,
+// default http://localhost:8480). Ranking / signal-lab / netflow / heatmap all use the
+// signal service — there is no claw402 wallet key.
+func NewStrategyEngine(config *store.StrategyConfig) *StrategyEngine {
+	// Create NofxOS client with API key from config (direct nofxos.ai).
 	apiKey := config.Indicators.NofxOSAPIKey
 	if apiKey == "" {
 		apiKey = nofxos.DefaultAuthKey
 	}
 	client := nofxos.NewClient(nofxos.DefaultBaseURL, apiKey)
 
-	// Vergex client: hybrid. Heatmap uses claw402 when a key is available;
-	// everything else uses the self-hosted signal service.
-	walletKey := ""
-	if len(claw402WalletKey) > 0 {
-		walletKey = claw402WalletKey[0]
-	}
-	vergexClient := vergex.NewClient("", walletKey, &logger.MCPLogger{})
+	vergexClient := vergex.NewClient("", "", &logger.MCPLogger{})
 
 	return &StrategyEngine{
 		config:             config,
@@ -715,7 +707,7 @@ func (e *StrategyEngine) getHyperRankCoins(category, direction string, limit int
 
 func (e *StrategyEngine) getVergexSignalCoins(limit int, marketType, chain, liqBand, category string, selectedSymbols []string) ([]CandidateCoin, error) {
 	if e.vergexClient == nil {
-		return nil, fmt.Errorf("vergex signal source requires a configured claw402 wallet")
+		return nil, fmt.Errorf("vergex signal source requires a configured signal service")
 	}
 	if marketType == "" {
 		marketType = vergex.DefaultMarketType
@@ -1111,7 +1103,7 @@ func (e *StrategyEngine) FetchVergexDataBatch(ctx context.Context, symbols []str
 		return result
 	}
 	if e.vergexClient == nil {
-		logger.Warnf("⚠️ Vergex signal data skipped: claw402 wallet is not configured")
+		logger.Warnf("⚠️ Vergex signal data skipped: signal service is not configured")
 		return result
 	}
 	if ctx == nil {

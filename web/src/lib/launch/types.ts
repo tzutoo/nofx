@@ -2,8 +2,6 @@ export type LaunchCheckStatus = 'ok' | 'failed' | 'warning' | 'skipped'
 
 export type LaunchCheckId =
   | 'ai_model'
-  | 'ai_wallet'
-  | 'ai_wallet_funds'
   | 'strategy'
   | 'exchange_config'
   | 'exchange_account'
@@ -23,13 +21,12 @@ export interface LaunchCheck {
 export interface LaunchPreflightResult {
   ready: boolean
   checks: LaunchCheck[]
-  min_ai_fee_usdc: number
   min_trading_usdc: number
   checked_at: string
 }
 
 /** Guided-setup anchor consumed by the traders page (`?setup=`). */
-export type SetupTarget = 'claw402' | 'hyperliquid' | 'hyperliquid-funds'
+export type SetupTarget = 'model' | 'hyperliquid' | 'hyperliquid-funds'
 
 export type LaunchOutcome =
   | { ok: true; traderId: string; warning?: string }

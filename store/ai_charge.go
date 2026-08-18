@@ -187,22 +187,3 @@ func applyPeriodFilter(query *gorm.DB, period string) *gorm.DB {
 		return query.Where("created_at >= ?", start)
 	}
 }
-
-// IsClaw402Config checks if a trader config uses claw402 payment provider
-func IsClaw402Config(aiModel string) bool {
-	return aiModel == "claw402"
-}
-
-// EstimateRunway estimates how many days the given USDC balance will last
-func EstimateRunway(usdcBalance float64, modelName string, scanIntervalMinutes int) (dailyCost float64, runwayDays float64) {
-	if scanIntervalMinutes <= 0 {
-		scanIntervalMinutes = 15
-	}
-	callsPerDay := float64(24*60) / float64(scanIntervalMinutes)
-	pricePerCall := GetModelPrice(modelName)
-	dailyCost = callsPerDay * pricePerCall
-	if dailyCost > 0 && usdcBalance > 0 {
-		runwayDays = usdcBalance / dailyCost
-	}
-	return dailyCost, runwayDays
-}

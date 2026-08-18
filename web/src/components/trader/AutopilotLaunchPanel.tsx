@@ -3,9 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   AlertCircle,
   ArrowRight,
-  CircleDollarSign,
   CheckCircle2,
-  Copy,
   ExternalLink,
   Loader2,
   RefreshCw,
@@ -14,17 +12,16 @@ import {
   Zap,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { api } from '../../lib/api'
-import { buildDashboardPath, ROUTES } from '../../router/paths'
+import { buildDashboardPath } from '../../router/paths'
 import {
   ensureClaw402Strategy,
   launchAutopilot,
 } from '../../lib/launch/launchAutopilot'
 import { runLaunchPreflight } from '../../lib/launch/preflight'
+import { pickTradingModel } from '../../lib/launch/resolve'
 import type { LaunchPreflightResult } from '../../lib/launch/types'
 import type {
   AIModel,
-  CurrentBeginnerWalletResponse,
   Exchange,
   ExchangeAccountState,
   TraderInfo,
@@ -41,11 +38,9 @@ interface AutopilotLaunchPanelProps {
   isLoggedIn: boolean
   language: string
   onRefresh: () => Promise<void>
-  onOpenClaw402Config?: () => void
   onOpenHyperliquidConfig?: () => void
 }
 
-const MIN_AI_FEE_USDC = 1
 const MIN_TRADING_USDC = 12
 
 function parseNumber(value?: string | number) {
@@ -67,15 +62,6 @@ function formatUSDC(value: number) {
   }).format(value)
 }
 
-async function copyText(value: string, label: string) {
-  try {
-    await navigator.clipboard.writeText(value)
-    toast.success(`${label} copied`)
-  } catch {
-    toast.error('Copy failed')
-  }
-}
-
 export function AutopilotLaunchPanel({
   models,
   exchanges,
@@ -84,26 +70,15 @@ export function AutopilotLaunchPanel({
   isLoggedIn,
   language,
   onRefresh,
-  onOpenClaw402Config,
   onOpenHyperliquidConfig,
 }: AutopilotLaunchPanelProps) {
   const navigate = useNavigate()
-  const [wallet, setWallet] = useState<CurrentBeginnerWalletResponse | null>(
-    null
-  )
-  const [walletLoading, setWalletLoading] = useState(false)
   const [launching, setLaunching] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const isZh = language === 'zh'
 
-  const claw402Model = useMemo(
-    () =>
-      models.find(
-        (model) =>
-          model.provider === 'claw402' &&
-          model.enabled &&
-          (model.has_api_key || model.apiKey || model.walletAddress)
-      ) || null,
+  const tradingModel = useMemo(
+    () => pickTradingModel(models),
     [models]
   )
 
@@ -130,14 +105,13 @@ export function AutopilotLaunchPanel({
   )
 
   // Server-side preflight is the source of truth for balances: it queries the
-  // chain / exchange live (30s server cache) instead of trusting the balance
-  // snapshot cached in the model object. Poll while the panel is visible so
-  // deposits show up without a manual refresh.
+  // exchange live (30s server cache) instead of trusting a client snapshot.
+  // Poll while the panel is visible so deposits show up without a refresh.
   const [preflight, setPreflight] = useState<LaunchPreflightResult | null>(null)
-  const claw402ModelId = claw402Model?.id
+  const modelId = tradingModel?.id
   const preflightExchangeId = preflightExchange?.id
   useEffect(() => {
-    if (!isLoggedIn || !claw402ModelId || !preflightExchangeId) {
+    if (!isLoggedIn || !modelId || !preflightExchangeId) {
       setPreflight(null)
       return
     }
@@ -145,7 +119,7 @@ export function AutopilotLaunchPanel({
     const check = async () => {
       try {
         const result = await runLaunchPreflight({
-          ai_model_id: claw402ModelId,
+          ai_model_id: modelId,
           exchange_id: preflightExchangeId,
         })
         if (!cancelled) setPreflight(result)
@@ -159,24 +133,10 @@ export function AutopilotLaunchPanel({
       cancelled = true
       clearInterval(timer)
     }
-  }, [isLoggedIn, claw402ModelId, preflightExchangeId])
+  }, [isLoggedIn, modelId, preflightExchangeId])
 
   const preflightCheck = (id: string) =>
     preflight?.checks.find((check) => check.id === id)
-
-  const feeWalletAddress =
-    claw402Model?.walletAddress ||
-    wallet?.address ||
-    preflightCheck('ai_wallet')?.address ||
-    ''
-  const feeFundsCheck = preflightCheck('ai_wallet_funds')
-  const feeWalletBalance =
-    feeFundsCheck?.actual ??
-    parseNumber(claw402Model?.balanceUsdc || wallet?.balance_usdc)
-  const minAIFeeUSDC = preflight?.min_ai_fee_usdc ?? MIN_AI_FEE_USDC
-  const feeReady = feeFundsCheck
-    ? feeFundsCheck.status !== 'failed' && Boolean(feeWalletAddress)
-    : Boolean(feeWalletAddress) && feeWalletBalance >= minAIFeeUSDC
 
   const hyperliquidConnected = Boolean(hyperliquidExchange)
   const exchangeState = hyperliquidExchange
@@ -204,34 +164,19 @@ export function AutopilotLaunchPanel({
     [traders]
   )
 
-  const allReady = feeReady && hyperliquidConnected && tradingBalanceReady
-
-  const loadWallet = async () => {
-    setWalletLoading(true)
-    try {
-      setWallet(await api.getCurrentBeginnerWallet())
-    } catch {
-      setWallet(null)
-    } finally {
-      setWalletLoading(false)
-    }
-  }
-
-  useEffect(() => {
-    void loadWallet()
-  }, [])
+  const allReady = hyperliquidConnected && tradingBalanceReady
 
   const refreshEverything = async () => {
     setRefreshing(true)
     try {
-      await Promise.all([onRefresh(), loadWallet()])
+      await onRefresh()
     } finally {
       setRefreshing(false)
     }
   }
 
   const handleLaunch = async () => {
-    if (!claw402Model || !hyperliquidExchange) return
+    if (!tradingModel || !hyperliquidExchange) return
     setLaunching(true)
     try {
       // Shared launch path (same as Strategy Studio): server preflight with
@@ -247,9 +192,7 @@ export function AutopilotLaunchPanel({
           setPreflight(outcome.preflight)
         }
         if (outcome.kind !== 'error') {
-          if (outcome.setupTarget === 'claw402') {
-            onOpenClaw402Config?.()
-          } else if (outcome.setupTarget === 'hyperliquid') {
+          if (outcome.setupTarget === 'hyperliquid') {
             onOpenHyperliquidConfig?.()
           }
         }
@@ -276,47 +219,7 @@ export function AutopilotLaunchPanel({
     action?: JSX.Element
   }> = [
     {
-      title: 'Step 1 · Fund the AI wallet ($1+)',
-      detail:
-        'The AI pays a tiny fee each time it thinks. Send $1 or more of USDC on the Base network to this address — from Binance, OKX, Coinbase or any wallet. Separate from your trading money.',
-      status: feeReady ? 'ready' : 'action',
-      meta: feeWalletAddress
-        ? `${shortAddress(feeWalletAddress)} · ${formatUSDC(feeWalletBalance)} USDC${
-            feeReady ? '' : ` · needs ≥ ${minAIFeeUSDC} USDC`
-          }`
-        : 'Takes 1 minute — we create the wallet for you',
-      action: feeWalletAddress ? (
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            onClick={() => navigate(ROUTES.welcome)}
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-nofx-gold hover:text-nofx-accent"
-          >
-            <CircleDollarSign className="h-3.5 w-3.5" />
-            Deposit
-          </button>
-          <button
-            type="button"
-            onClick={() => void copyText(feeWalletAddress, 'AI fee wallet')}
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-nofx-gold hover:text-nofx-accent"
-          >
-            <Copy className="h-3.5 w-3.5" />
-            Copy
-          </button>
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={() => navigate(ROUTES.welcome)}
-          className="inline-flex items-center gap-1.5 text-xs font-semibold text-nofx-gold hover:text-nofx-accent"
-        >
-          <ArrowRight className="h-3.5 w-3.5" />
-          Create
-        </button>
-      ),
-    },
-    {
-      title: 'Step 2 · Connect Hyperliquid',
+      title: 'Step 1 · Connect Hyperliquid',
       detail:
         'Approve NOFX once with your crypto wallet (Rabby or MetaMask). This lets the AI place trades for you — it can never withdraw your money.',
       status: hyperliquidConnected ? 'ready' : 'action',
@@ -335,7 +238,7 @@ export function AutopilotLaunchPanel({
       ),
     },
     {
-      title: 'Step 3 · Add trading money ($12+)',
+      title: 'Step 2 · Add trading money ($12+)',
       detail:
         'Deposit USDC into your Hyperliquid account (app.hyperliquid.xyz → Deposit, USDC on Arbitrum). This is what the AI trades with — start small, you can add more anytime.',
       status: tradingBalanceReady
@@ -347,10 +250,10 @@ export function AutopilotLaunchPanel({
         ? `${formatUSDC(tradingBalance)} USDC available${
             tradingBalanceReady ? '' : ` · needs ≥ ${minTradingUSDC} USDC`
           }`
-        : 'Finish step 2 first',
+        : 'Finish step 1 first',
     },
     {
-      title: 'Step 4 · Press start',
+      title: 'Step 3 · Press start',
       detail:
         'The AI reads the market every few minutes, picks its trades, and manages them on its own. Watch every decision live on the dashboard — stop it with one click anytime.',
       status: allReady ? 'ready' : 'blocked',
@@ -360,24 +263,11 @@ export function AutopilotLaunchPanel({
           ? 'Ready to start'
           : allReady
             ? 'Everything is ready — press the button'
-            : 'Unlocks when steps 1–3 are green',
+            : 'Unlocks when steps 1–2 are green',
     },
   ]
 
   const renderPrimaryAction = () => {
-    if (!feeReady) {
-      return (
-        <button
-          type="button"
-          onClick={() => navigate(ROUTES.welcome)}
-          className="inline-flex items-center justify-center gap-2 rounded-lg bg-nofx-gold px-4 py-3 text-sm font-bold text-white hover:bg-nofx-accent"
-        >
-          Set up the AI wallet
-          <ArrowRight className="h-4 w-4" />
-        </button>
-      )
-    }
-
     if (!hyperliquidConnected) {
       return (
         <button
@@ -462,19 +352,20 @@ export function AutopilotLaunchPanel({
                 Start NOFX Autopilot in minutes
               </h2>
               <p className="mt-2 max-w-2xl text-sm leading-6 text-nofx-text-muted">
-                Four small steps, about $13 total. No API keys, no config files
-                — the AI trades for you, and you can stop it anytime.
+                Three small steps, about $12 total. Configure an AI model, add
+                trading money, and the AI trades for you — you can stop it
+                anytime.
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
                 onClick={() => void refreshEverything()}
-                disabled={refreshing || walletLoading}
+                disabled={refreshing}
                 className="inline-flex items-center justify-center gap-2 rounded-lg border border-nofx-gold/20 bg-nofx-bg-deeper px-3 py-2 text-xs font-semibold text-nofx-text-muted hover:text-nofx-text disabled:opacity-60"
               >
                 <RefreshCw
-                  className={`h-3.5 w-3.5 ${refreshing || walletLoading ? 'animate-spin' : ''}`}
+                  className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`}
                 />
                 Refresh
               </button>

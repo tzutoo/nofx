@@ -22,13 +22,13 @@ const setupSteps = [
     to: ROUTES.register,
   },
   {
-    title: 'Fund the AI fee wallet',
+    title: 'Configure an AI model',
     detail:
-      'NOFX prepares a Base USDC wallet for Claw402.ai data and model calls. This wallet is separate from trading collateral.',
+      'Pick a paid custom model and add its API key. The AI reads the market and drives every trade for you.',
     icon: CircleDollarSign,
-    action: 'Open deposit QR',
+    action: 'Open model config',
     to: ROUTES.login,
-    returnUrl: `${ROUTES.traders}?setup=claw402`,
+    returnUrl: `${ROUTES.traders}?setup=model`,
   },
   {
     title: 'Authorize Hyperliquid',
@@ -79,7 +79,7 @@ export function TraderLaunchGuestPage() {
                 onClick={() =>
                   sessionStorage.setItem(
                     'returnUrl',
-                    `${ROUTES.traders}?setup=claw402`
+                    `${ROUTES.traders}?setup=model`
                   )
                 }
                 className="inline-flex items-center justify-center gap-2 rounded-xl bg-nofx-gold px-5 py-3 text-sm font-bold text-white transition hover:bg-nofx-gold/90"

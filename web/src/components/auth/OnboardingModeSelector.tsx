@@ -24,8 +24,8 @@ export function OnboardingModeSelector({
       title: isZh ? 'Beginner Mode' : 'Beginner Mode',
       badge: isZh ? 'Recommended' : 'Recommended',
       description: isZh
-        ? 'Generate a Base wallet automatically and start with Claw402 + GLM by default.'
-        : 'Generate a Base wallet automatically and start with Claw402 + GLM by default.',
+        ? 'Start with a guided default strategy and configure an AI model to run it.'
+        : 'Start with a guided default strategy and configure an AI model to run it.',
     },
     {
       id: 'advanced',

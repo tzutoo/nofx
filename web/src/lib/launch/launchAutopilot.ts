@@ -37,8 +37,8 @@ export async function launchAutopilot(
         ok: false,
         kind: 'setup',
         message:
-          'No enabled AI model is ready. Create or fund the Claw402 wallet first.',
-        setupTarget: 'claw402',
+          'No enabled AI model is ready. Configure an AI model first.',
+        setupTarget: 'model',
       }
     }
 

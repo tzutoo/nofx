@@ -7,9 +7,8 @@ import (
 )
 
 // ai500CacheTTL bounds how often the AI500 board is re-fetched. The list is
-// refreshed upstream on the order of minutes, every claw402-routed call costs
-// money, and the agent UI polls this for display — so short staleness is
-// preferable to per-render upstream calls.
+// refreshed upstream on the order of minutes, and the agent UI polls this for
+// display — so short staleness is preferable to per-render upstream calls.
 const ai500CacheTTL = 5 * time.Minute
 
 type ai500CacheStore struct {

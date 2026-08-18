@@ -145,8 +145,7 @@ func (s *Server) setupRoutes() {
 		// System config (no authentication required, for frontend to determine admin mode/registration status)
 		s.route(api, "GET", "/config", "Get system configuration", s.handleGetSystemConfig)
 
-		// Wallet validation (no authentication required — used by frontend config form)
-		api.POST("/wallet/validate", s.handleWalletValidate)
+		// EVM keypair generation (no auth — used by the Hyperliquid wallet-connect flow)
 		api.POST("/wallet/generate", s.handleWalletGenerate)
 		s.route(api, "GET", "/hyperliquid/connect-config", "Get NOFX Hyperliquid builder authorization config", s.handleHyperliquidConnectConfig)
 		s.route(api, "GET", "/hyperliquid/account", "Get Hyperliquid account balance summary", s.handleHyperliquidAccount)
@@ -200,8 +199,6 @@ func (s *Server) setupRoutes() {
 		{
 			// Logout (add to blacklist)
 			s.route(protected, "POST", "/logout", "Logout (blacklist token)", s.handleLogout)
-			s.route(protected, "POST", "/onboarding/beginner", "Prepare beginner claw402 wallet and default model", s.handleBeginnerOnboarding)
-			s.route(protected, "GET", "/onboarding/beginner/current", "Get current beginner claw402 wallet", s.handleCurrentBeginnerWallet)
 
 			// User account management
 			s.routeWithSchema(protected, "PUT", "/user/password", "Change current user password",
@@ -242,7 +239,7 @@ Runs launch preflight first and returns 400 with {"error_key":"trader.start.pref
 				s.handleStartTrader)
 			s.routeWithSchema(protected, "GET", "/traders/:id/preflight", "Run launch readiness checks for a trader",
 				`:id = trader_id from GET /api/my-traders.
-Returns: {"ready":<bool>,"checks":[{"id":"ai_model|ai_wallet|ai_wallet_funds|strategy|exchange_config|exchange_account|exchange_funds","status":"ok|failed|warning|skipped","code":"<string>","message":"<string>","required":<number>,"actual":<number>,"asset":"<string>","address":"<string>"}],"min_ai_fee_usdc":<number>,"min_trading_usdc":<number>}`,
+Returns: {"ready":<bool>,"checks":[{"id":"ai_model|strategy|exchange_config|exchange_account|exchange_funds","status":"ok|failed|warning|skipped","code":"<string>","message":"<string>","required":<number>,"actual":<number>,"asset":"<string>","address":"<string>"}],"min_trading_usdc":<number>}`,
 				s.handleTraderPreflight)
 			s.routeWithSchema(protected, "POST", "/launch/preflight", "Run launch readiness checks before creating a trader",
 				`Body: {"ai_model_id":"<EXACT id from GET /api/models>","exchange_id":"<EXACT id from GET /api/exchanges>","strategy_id":"<optional, EXACT id from GET /api/strategies>"}

@@ -36,7 +36,7 @@ The terminal opens at `http://127.0.0.1:3000`.
 **First run**
 
 1. Register — the first account becomes the owner of the instance.
-2. Follow the guided launch: put **$1+ USDC** (Base network) in the AI fee wallet it creates for you, then connect Hyperliquid and deposit **$12+ USDC** to trade with.
+2. Follow the guided launch: configure your AI model with its API key, then connect Hyperliquid and deposit **$12+ USDC** to trade with.
 3. Start **Autopilot**. The AI scans the market every few minutes and trades on its own; every decision appears on the dashboard as it happens. Stop it anytime with one click.
 
 <br/>
@@ -67,7 +67,7 @@ https://github.com/user-attachments/assets/3310f495-14c5-4586-a1cc-3d32e44aa505
 
 ## The model proposes. The runtime disposes.
 
-Decisions come from a language model reading the [Claw402.ai](https://claw402.ai) · Vergex data stack: a live signal board that ranks every market with directional bias and signal strength, per-symbol Signal Lab deep signals, cost-basis and liquidation heatmaps that show where the crowd's fuel and walls sit, and real-time market net flow — cross-checked against raw candles and the trader's own live track record. Execution does not.
+Decisions come from a language model reading the Vergex signal stack: a live signal board that ranks every market with directional bias and signal strength, per-symbol Signal Lab deep signals, cost-basis and liquidation heatmaps that show where the crowd's fuel and walls sit, and real-time market net flow — cross-checked against raw candles and the trader's own live track record. Execution does not.
 
 Every order passes through limits enforced in code, outside the model's reach:
 
@@ -79,7 +79,7 @@ Every order passes through limits enforced in code, outside the model's reach:
 | Drawdown auto-close      | Profitable positions that give back too much from their peak are closed            |
 | Trade throttling         | Minimum hold times, per-symbol re-entry cooldowns, per-cycle and per-hour entry limits |
 | Safe mode                | Repeated model failures block new entries until the model recovers                 |
-| Launch preflight         | Model access, wallet funds, strategy, and exchange balances verified before a trader may start |
+| Launch preflight         | Model access, strategy, and exchange balances verified before a trader may start |
 
 Each decision is stored with the model's full reasoning. There is no position without a paper trail.
 
@@ -123,12 +123,6 @@ Each decision is stored with the model's full reasoning. There is no position wi
 
 Eight providers with your own keys — DeepSeek, OpenAI, Claude, Qwen, Gemini, Grok, Kimi, MiniMax — including custom endpoints and model names.
 
-Or no keys at all: [Claw402](https://claw402.ai) meters model usage per call in USDC over the x402 protocol. A wallet on Base replaces every API key.
-
-| Provider | Access |
-| :------- | :----- |
-| **Claw402** | [Pay-as-you-go AI models with official discount](https://claw402.ai) |
-
 ## Markets
 
 Crypto perpetuals on all nine exchanges. On Hyperliquid, the same runtime also trades tokenized US equities, commodities, indices, FX, and pre-IPO perps — TSLA, NVDA, GOLD, SPX, EUR, OPENAI — alongside crypto.
@@ -151,7 +145,7 @@ Crypto perpetuals on all nine exchanges. On Hyperliquid, the same runtime also t
     ├──────────────┴──────────────┴───────────────────┤
     │                 AI Model Layer                    │
     │  DeepSeek · OpenAI · Claude · Qwen · Gemini      │
-    │  Grok · Kimi · MiniMax · Claw402 (x402 USDC)     │
+    │  Grok · Kimi · MiniMax                        │
     ├─────────────────────────────────────────────────┤
     │              Exchange Connectivity                │
     │ Binance · Bybit · OKX · Hyperliquid · Bitget     │

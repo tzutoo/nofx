@@ -13,7 +13,6 @@ import (
 	"nofx/logger"
 	"nofx/security"
 	"nofx/store"
-	"nofx/wallet"
 
 	"github.com/gin-gonic/gin"
 )
@@ -36,8 +35,6 @@ type SafeModelConfig struct {
 	HasAPIKey       bool   `json:"has_api_key"`
 	CustomAPIURL    string `json:"customApiUrl"`    // Custom API URL (usually not sensitive)
 	CustomModelName string `json:"customModelName"` // Custom model name (not sensitive)
-	WalletAddress   string `json:"walletAddress,omitempty"`
-	BalanceUSDC     string `json:"balanceUsdc,omitempty"`
 }
 
 // ModelConfigUpdate is a single model's update payload. It is a named type
@@ -66,13 +63,10 @@ func (s *Server) handleGetModelConfigs(c *gin.Context) {
 		return
 	}
 
-	// If no models in database, return default models
+	// If no models in database, return empty list
 	if len(models) == 0 {
-		logger.Infof("⚠️ No AI models in database, returning defaults")
-		defaultModels := []SafeModelConfig{
-			{ID: "claw402", Name: "Claw402 (Base USDC)", Provider: "claw402", Enabled: false, HasAPIKey: false},
-		}
-		c.JSON(http.StatusOK, defaultModels)
+		logger.Infof("⚠️ No AI models in database")
+		c.JSON(http.StatusOK, []SafeModelConfig{})
 		return
 	}
 
@@ -94,26 +88,12 @@ func (s *Server) handleGetModelConfigs(c *gin.Context) {
 			CustomModelName: model.CustomModelName,
 		}
 
-		if model.Provider == "claw402" {
-			if privateKey := strings.TrimSpace(model.APIKey.String()); privateKey != "" {
-				if walletAddress, addrErr := walletAddressFromPrivateKey(privateKey); addrErr == nil {
-					safeModel.WalletAddress = walletAddress
-					safeModel.BalanceUSDC = wallet.QueryUSDCBalanceStr(walletAddress)
-				} else {
-					logger.Warnf("⚠️ Failed to derive claw402 wallet address for model %s: %v", model.ID, addrErr)
-				}
-			}
-		}
-
 		safeModels = append(safeModels, safeModel)
 	}
 
 	if len(safeModels) == 0 {
-		logger.Infof("⚠️ No visible AI models in database, returning defaults")
-		defaultModels := []SafeModelConfig{
-			{ID: "claw402", Name: "Claw402 (Base USDC)", Provider: "claw402", Enabled: false, HasAPIKey: false},
-		}
-		c.JSON(http.StatusOK, defaultModels)
+		logger.Infof("⚠️ No visible AI models in database")
+		c.JSON(http.StatusOK, []SafeModelConfig{})
 		return
 	}
 
@@ -182,7 +162,7 @@ func (s *Server) handleUpdateModelConfigs(c *gin.Context) {
 
 	// Update each model's configuration and track traders that need reload.
 	// The request key may be either the model row id or the provider name
-	// (legacy clients send the provider, e.g. "claw402", while trader rows
+	// (legacy clients send the provider, e.g. "deepseek", while trader rows
 	// reference the full model id) — resolve both, mirroring the matching in
 	// AIModelStore.Update, otherwise running traders keep the old model.
 	modelIDCandidates := func(modelID string) map[string]bool {
@@ -246,7 +226,6 @@ func (s *Server) handleUpdateModelConfigs(c *gin.Context) {
 func (s *Server) handleGetSupportedModels(c *gin.Context) {
 	// Return static list of supported AI models with default versions
 	supportedModels := []map[string]interface{}{
-		{"id": "claw402", "name": "Claw402 (Base USDC)", "provider": "claw402", "defaultModel": "gpt-5.6"},
 		{"id": "custom", "name": "Custom API", "provider": "custom", "defaultModel": ""},
 	}
 

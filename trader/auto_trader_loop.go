@@ -4,16 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"nofx/kernel"
 	"nofx/logger"
 	"nofx/market"
-	"nofx/mcp/payment"
 	"nofx/provider/hyperliquid"
 	"nofx/store"
-	"nofx/wallet"
 	"strings"
 	"time"
 )
@@ -37,11 +34,6 @@ func (at *AutoTrader) runCycle() error {
 
 	if err := at.reloadStrategyConfigIfChanged(); err != nil {
 		at.logWarnf("⚠️ Strategy refresh failed, using current in-memory config: %v", err)
-	}
-
-	// Check USDC balance periodically for claw402 users (every 10 cycles)
-	if at.callCount%10 == 0 && store.IsClaw402Config(at.config.AIModel) {
-		at.checkClaw402Balance()
 	}
 
 	// Create decision record
@@ -136,26 +128,13 @@ func (at *AutoTrader) runCycle() error {
 
 	// Record AI charge (track cost regardless of decision outcome).
 	// Use the effective model name (custom model, e.g. "gpt-5.6") so the
-	// per-call price lookup matches what was actually invoked — at.aiModel is
-	// the provider id (e.g. "claw402") and would fall back to the default price.
-	// Prefer the gateway-reported settled amount (upto scheme) over the flat
-	// catalog estimate when the client exposes it.
+	// per-call price lookup matches what was actually invoked.
 	if aiDecision != nil && at.store != nil {
 		chargeModel := at.config.CustomModelName
 		if chargeModel == "" {
 			chargeModel = at.aiModel
 		}
-		var chargeErr error
-		if r, ok := at.mcpClient.(interface{ LastCallCostUSD() (float64, bool) }); ok {
-			if actual, has := r.LastCallCostUSD(); has {
-				chargeErr = at.store.AICharge().RecordWithCost(at.id, chargeModel, at.config.AIModel, actual)
-			} else {
-				chargeErr = at.store.AICharge().Record(at.id, chargeModel, at.config.AIModel)
-			}
-		} else {
-			chargeErr = at.store.AICharge().Record(at.id, chargeModel, at.config.AIModel)
-		}
-		if chargeErr != nil {
+		if chargeErr := at.store.AICharge().Record(at.id, chargeModel, at.config.AIModel); chargeErr != nil {
 			at.logWarnf("⚠️ Failed to record AI charge: %v", chargeErr)
 		}
 	}
@@ -164,18 +143,6 @@ func (at *AutoTrader) runCycle() error {
 		at.consecutiveAIFailures++
 		record.Success = false
 		record.ErrorMessage = fmt.Sprintf("Failed to get AI decision: %v", err)
-
-		// Payment-layer rejection means the AI fee wallet is definitively out
-		// of funds — surface it as structured health state (GetStatus), not
-		// just a log line.
-		var insufficientFunds *payment.ErrInsufficientFunds
-		if errors.As(err, &insufficientFunds) {
-			at.markAIWalletEmptyFromPayment(insufficientFunds.Balance)
-			record.ErrorMessage = fmt.Sprintf(
-				"AI fee wallet out of funds: balance $%.2f USDC, next call needs ~$%.2f. Top up the Base USDC wallet.",
-				insufficientFunds.Balance, insufficientFunds.Needed,
-			)
-		}
 
 		// Activate safe mode after 3 consecutive failures
 		if at.consecutiveAIFailures >= 3 && !at.isSafeMode() {
@@ -820,41 +787,6 @@ func sortDecisionsByPriority(decisions []kernel.Decision) []kernel.Decision {
 	}
 
 	return sorted
-}
-
-// checkClaw402Balance checks USDC balance and logs warnings if low
-func (at *AutoTrader) checkClaw402Balance() {
-	scanMinutes := int(at.config.ScanInterval.Minutes())
-	if scanMinutes <= 0 {
-		scanMinutes = 15
-	}
-	dailyCost, _ := store.EstimateRunway(1.0, at.config.CustomModelName, scanMinutes)
-	logger.Infof("💰 [%s] Estimated daily AI cost: ~$%.2f (model: %s, interval: %dm)",
-		at.name, dailyCost, at.config.CustomModelName, scanMinutes)
-
-	if at.claw402WalletAddr != "" {
-		balance, err := wallet.QueryUSDCBalance(at.claw402WalletAddr)
-		if err != nil {
-			at.logWarnf("⚠️ Failed to query USDC balance: %v", err)
-			at.markAIWalletHealthUnknown()
-			return
-		}
-
-		at.setAIWalletHealth(balance)
-		if balance < aiWalletLowThresholdUSDC {
-			at.logWarnf("⚠️ Low USDC balance: $%.2f — AI may stop soon!", balance)
-		}
-		if balance <= 0 {
-			at.logErrorf("🚨 USDC balance is ZERO — AI calls will fail!")
-		}
-
-		runway := float64(0)
-		if dailyCost > 0 {
-			runway = balance / dailyCost
-		}
-		logger.Infof("💰 [%s] USDC Balance: $%.2f | Daily AI cost: ~$%.2f | Runway: ~%.1f days",
-			at.name, balance, dailyCost, runway)
-	}
 }
 
 // pushSignalPriority sends the current candidate symbols to the self-hosted

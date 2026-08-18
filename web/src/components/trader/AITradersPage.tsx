@@ -3,7 +3,6 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import useSWR from 'swr'
 import { api } from '../../lib/api'
 import { ApiError } from '../../lib/httpClient'
-import { ROUTES } from '../../router/paths'
 import type {
   TraderInfo,
   CreateTraderRequest,
@@ -635,17 +634,9 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
     setShowExchangeModal(true)
   }
 
-  const handleOpenClaw402Config = () => {
-    const configuredClaw402 = allModels?.find(
-      (model) => model.provider === 'claw402'
-    )
-    const supportedClaw402 = supportedModels?.find(
-      (model) => model.provider === 'claw402'
-    )
-    const modelId = configuredClaw402?.id || supportedClaw402?.id || 'claw402'
-
-    setEditingModel(configuredClaw402?.id || null)
-    setInitialModelId(modelId)
+  const handleOpenModelConfig = () => {
+    setEditingModel(null)
+    setInitialModelId(null)
     setShowModelModal(true)
   }
 
@@ -667,10 +658,10 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
     const setupTarget = searchParams.get('setup')
     if (!setupTarget) return
 
-    if (setupTarget === 'claw402') {
-      // The welcome page shows the deposit QR, auto-creates the wallet if
-      // needed, and polls the balance — friendlier than the key-config modal.
-      navigate(ROUTES.welcome)
+    if (setupTarget === 'model') {
+      // Missing/invalid AI model: open the model config modal so the user can
+      // pick a paid custom model and add its credential.
+      handleOpenModelConfig()
     } else if (setupTarget === 'hyperliquid') {
       handleOpenHyperliquidConfig()
     } else if (setupTarget === 'hyperliquid-funds') {
@@ -705,7 +696,6 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       isLoggedIn={Boolean(user && token)}
       language={language}
       onRefresh={refreshLaunchState}
-      onOpenClaw402Config={handleOpenClaw402Config}
       onOpenHyperliquidConfig={handleOpenHyperliquidConfig}
     />
   )

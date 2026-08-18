@@ -9,7 +9,6 @@ import (
 	"nofx/logger"
 	"nofx/market"
 	"nofx/mcp"
-	_ "nofx/mcp/payment"
 	_ "nofx/mcp/provider"
 	"nofx/store"
 	"time"
@@ -570,7 +569,7 @@ func (s *Server) handleStrategyTestRun(c *gin.Context) {
 		req.PromptVariant = "balanced"
 	}
 
-	// The data plane no longer requires a claw402 wallet key; the engine ignores it.
+	// The data plane is served by the self-hosted signal service (no wallet key).
 	engine := kernel.NewStrategyEngine(&req.Config)
 
 	// Get candidate coins
@@ -737,13 +736,7 @@ func (s *Server) runRealAITest(userID, modelID, systemPrompt, userPrompt string)
 		aiClient = mcp.NewClient()
 	}
 
-	// Payment providers ignore custom URL
-	switch provider {
-	case "claw402":
-		aiClient.SetAPIKey(apiKey, "", model.CustomModelName)
-	default:
-		aiClient.SetAPIKey(apiKey, model.CustomAPIURL, model.CustomModelName)
-	}
+	aiClient.SetAPIKey(apiKey, model.CustomAPIURL, model.CustomModelName)
 
 	// Call AI API
 	response, err := aiClient.CallWithMessages(systemPrompt, userPrompt)
@@ -752,8 +745,4 @@ func (s *Server) runRealAITest(userID, modelID, systemPrompt, userPrompt string)
 	}
 
 	return response, nil
-}
-
-func (s *Server) resolveStrategyDataWalletKey(userID, selectedModelID string) (string, error) {
-	return s.store.AIModel().ResolveClaw402WalletKey(userID, selectedModelID)
 }

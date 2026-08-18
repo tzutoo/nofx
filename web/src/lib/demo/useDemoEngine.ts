@@ -408,7 +408,7 @@ function build(S: SimState): DemoDataset {
     is_running: true,
     call_count: S.cycle,
     scan_interval: '5m',
-    ai_model: 'claw402',
+    ai_model: 'custom',
     strategy_type: 'ai_trading',
   } as unknown as SystemStatus
 
@@ -421,7 +421,7 @@ function build(S: SimState): DemoDataset {
     history,
     config: {
       scan_interval_minutes: 5,
-      ai_model: 'claw402',
+      ai_model: 'custom',
       strategy_name: 'NOFX Claw402 Auto Strategy',
       btc_eth_leverage: 10,
       altcoin_leverage: 10,

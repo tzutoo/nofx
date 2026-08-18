@@ -1092,8 +1092,6 @@ export const translations = {
       configureApi: 'Configure API',
       configureWallet: 'Configure Wallet',
       chooseProvider: 'Choose Your AI Provider',
-      claw402EntryDesc:
-        'Recommended default path. Use Base USDC pay-per-call instead of managing API keys.',
       otherApiEntry: 'Other API Providers',
       otherApiEntryDesc:
         'Use your own API key for OpenAI, Claude, Gemini, DeepSeek, and more.',
@@ -1101,10 +1099,7 @@ export const translations = {
       recommended: 'Best',
       allModelsClaw: 'Pay-as-you-go with USDC — supports all major AI models',
       selectAiModel: 'Choose AI Model',
-      allModelsUnified:
-        'All models unified via Claw402. Switch anytime after setup.',
       setupWallet: 'Setup Wallet',
-      walletInfo: 'Claw402 uses USDC on Base chain. You need an EVM wallet.',
       exportKey: 'Export private key from MetaMask, Rabby, etc.',
       dedicatedWallet:
         'Recommended: create a dedicated wallet with a small USDC balance',
@@ -1126,8 +1121,6 @@ export const translations = {
       validating: 'Validating...',
       walletAddress: 'Wallet Address',
       usdcBalance: 'Base USDC Balance',
-      claw402Connected: 'claw402 Connected',
-      claw402Unreachable: 'claw402 Unreachable',
       depositUsdc: 'Deposit USDC to this address on Base chain',
       invalidKeyPrefix: 'Please add 0x at the beginning',
       invalidKeyLength: 'Should be 66 characters, currently',
@@ -2264,8 +2257,6 @@ export const translations = {
       configureApi: '配置 API',
       configureWallet: '配置钱包',
       chooseProvider: '选择 AI 模型提供商',
-      claw402EntryDesc:
-        '默认推荐走这条路。直接用 Base USDC 按次付费，不需要自己管理 API Key。',
       otherApiEntry: '其他 API 模型',
       otherApiEntryDesc:
         '如果你已经有自己的 OpenAI、Claude、Gemini、DeepSeek 等 API Key，再从这里进入。',
@@ -2273,9 +2264,7 @@ export const translations = {
       recommended: '推荐',
       allModelsClaw: '用 USDC 按量付费，支持所有主流 AI 模型',
       selectAiModel: '① 选择 AI 模型',
-      allModelsUnified: '所有模型通过 Claw402 统一调用，创建后可随时切换',
       setupWallet: '② 设置钱包',
-      walletInfo: '💡 Claw402 使用 Base 链上的 USDC 付费，你需要一个 EVM 钱包',
       exportKey: '可以用 MetaMask、Rabby 等钱包导出私钥',
       dedicatedWallet: '建议新建一个专用钱包，充入少量 USDC 即可',
       walletPrivateKey: '钱包私钥（Base 链 EVM）',
@@ -2295,8 +2284,6 @@ export const translations = {
       validating: '验证中...',
       walletAddress: '钱包地址',
       usdcBalance: 'Base USDC 余额',
-      claw402Connected: 'claw402 已连接',
-      claw402Unreachable: 'claw402 不可达',
       depositUsdc: '请往此地址充值 Base 链 USDC',
       invalidKeyPrefix: '请在开头加 0x',
       invalidKeyLength: '应为 66 个字符，当前',
@@ -3387,8 +3374,6 @@ export const translations = {
       configureApi: 'Konfigurasi API',
       configureWallet: 'Konfigurasi Wallet',
       chooseProvider: 'Pilih Penyedia AI Anda',
-      claw402EntryDesc:
-        'Jalur default yang direkomendasikan. Gunakan Base USDC bayar per panggilan tanpa mengelola API key.',
       otherApiEntry: 'Penyedia API Lain',
       otherApiEntryDesc:
         'Gunakan API key Anda sendiri untuk OpenAI, Claude, Gemini, DeepSeek, dan lainnya.',
@@ -3397,11 +3382,7 @@ export const translations = {
       allModelsClaw:
         'Bayar per panggilan dengan USDC — mendukung semua model AI utama',
       selectAiModel: 'Pilih Model AI',
-      allModelsUnified:
-        'Semua model terpadu via Claw402. Ganti kapan saja setelah setup.',
       setupWallet: 'Setup Wallet',
-      walletInfo:
-        'Claw402 menggunakan USDC di Base chain. Anda memerlukan wallet EVM.',
       exportKey: 'Ekspor private key dari MetaMask, Rabby, dll.',
       dedicatedWallet: 'Disarankan: buat wallet khusus dengan saldo USDC kecil',
       walletPrivateKey: 'Private Key Wallet (Base Chain EVM)',
@@ -3422,8 +3403,6 @@ export const translations = {
       validating: 'Memvalidasi...',
       walletAddress: 'Alamat Wallet',
       usdcBalance: 'Saldo Base USDC',
-      claw402Connected: 'claw402 Terhubung',
-      claw402Unreachable: 'claw402 Tidak Dapat Dijangkau',
       depositUsdc: 'Deposit USDC ke alamat ini di Base chain',
       invalidKeyPrefix: 'Tambahkan 0x di awal',
       invalidKeyLength: 'Harus 66 karakter, saat ini',

@@ -2,32 +2,25 @@ import { Brain, Landmark, Rocket, Sparkles } from 'lucide-react'
 
 interface BeginnerGuideCardsProps {
   language: string
-  claw402Ready: boolean
+  modelReady: boolean
   exchangeReady: boolean
   strategyReady: boolean
   traderReady: boolean
   canCreateTrader: boolean
-  walletAddress?: string | null
-  onQuickSetupClaw402: () => void
+  onOpenModelConfig: () => void
   onOpenExchange: () => void
   onOpenStrategy: () => void
   onCreateTrader: () => void
 }
 
-function truncateAddress(address: string) {
-  if (address.length <= 12) return address
-  return `${address.slice(0, 6)}...${address.slice(-4)}`
-}
-
 export function BeginnerGuideCards({
   language,
-  claw402Ready,
+  modelReady,
   exchangeReady,
   strategyReady,
   traderReady,
   canCreateTrader,
-  walletAddress,
-  onQuickSetupClaw402,
+  onOpenModelConfig,
   onOpenExchange,
   onOpenStrategy,
   onCreateTrader,
@@ -38,27 +31,23 @@ export function BeginnerGuideCards({
     {
       key: 'model',
       icon: Brain,
-      title: isZh ? '1. Fast AI' : '1. Fast AI',
+      title: isZh ? '1. Configure an AI model' : '1. Configure an AI model',
       desc: isZh
-        ? 'Start with Claw402 + DeepSeek. No model picking needed for the first run.'
-        : 'Start with Claw402 + DeepSeek. No model picking needed for the first run.',
-      meta: walletAddress
-        ? isZh
-          ? `Wallet ${truncateAddress(walletAddress)}`
-          : `Wallet ${truncateAddress(walletAddress)}`
-        : isZh
-          ? 'Pay per call with Base USDC'
-          : 'Pay per call with Base USDC',
-      ready: claw402Ready,
-      actionLabel: claw402Ready
+        ? 'Pick a model and add its API key. The AI drives every trade for you.'
+        : 'Pick a model and add its API key. The AI drives every trade for you.',
+      meta: isZh
+        ? 'Paid model with an API key'
+        : 'Paid model with an API key',
+      ready: modelReady,
+      actionLabel: modelReady
         ? isZh
           ? 'Configured'
           : 'Configured'
         : isZh
-          ? 'One-click setup'
-          : 'One-click setup',
-      onAction: onQuickSetupClaw402,
-      disabled: claw402Ready,
+          ? 'Configure'
+          : 'Configure',
+      onAction: onOpenModelConfig,
+      disabled: false,
     },
     {
       key: 'exchange',

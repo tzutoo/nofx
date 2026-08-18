@@ -1384,30 +1384,7 @@ func GetContextLimit(provider string) int {
 }
 
 // GetContextLimitForClient returns context limit for a provider+model pair.
-// For claw402, the underlying model is inferred from the model name prefix.
 func GetContextLimitForClient(provider, model string) int {
-	if provider == "claw402" {
-		switch {
-		case strings.HasPrefix(model, "claude"):
-			return ModelContextLimits["claude"]
-		case strings.HasPrefix(model, "gpt"), strings.HasPrefix(model, "o1"), strings.HasPrefix(model, "o3"):
-			return ModelContextLimits["openai"]
-		case strings.HasPrefix(model, "gemini"):
-			return ModelContextLimits["gemini"]
-		case strings.HasPrefix(model, "grok"):
-			return ModelContextLimits["grok"]
-		case strings.HasPrefix(model, "kimi"):
-			return ModelContextLimits["kimi"]
-		case strings.HasPrefix(model, "qwen"):
-			return ModelContextLimits["qwen"]
-		case strings.HasPrefix(model, "minimax"):
-			return ModelContextLimits["minimax"]
-		case strings.HasPrefix(model, "deepseek"):
-			return ModelContextLimits["deepseek"]
-		default:
-			return ModelContextLimits["deepseek"]
-		}
-	}
 	return GetContextLimit(provider)
 }
 

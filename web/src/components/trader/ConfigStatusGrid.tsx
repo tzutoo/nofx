@@ -139,20 +139,6 @@ export function ConfigStatusGrid({
                     <div className="text-[10px] text-nofx-text-muted font-mono flex items-center gap-2">
                       {model.customModelName || AI_PROVIDER_CONFIG[model.provider]?.defaultModel || ''}
                     </div>
-                    {model.provider === 'claw402' && (model.balanceUsdc || model.walletAddress) ? (
-                      <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[10px] font-mono">
-                        {model.balanceUsdc ? (
-                          <span className="rounded border border-nofx-success/20 bg-nofx-success/10 px-1.5 py-0.5 text-nofx-success">
-                            {model.balanceUsdc} USDC
-                          </span>
-                        ) : null}
-                        {model.walletAddress ? (
-                          <span className="rounded border border-nofx-gold/20 bg-nofx-gold/10 px-1.5 py-0.5 text-nofx-gold">
-                            {truncateAddress(model.walletAddress)}
-                          </span>
-                        ) : null}
-                      </div>
-                    ) : null}
                   </div>
                 </div>
 

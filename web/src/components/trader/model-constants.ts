@@ -1,16 +1,5 @@
 // Constants for AI model and provider configuration
 
-export interface Claw402Model {
-  id: string
-  name: string
-  provider: string
-  desc: string
-  brand: string     // key for getModelIcon / getModelColor
-  priceIn: number   // USD per 1M input tokens (upto pay-as-you-go)
-  priceOut: number  // USD per 1M output tokens
-  isNew?: boolean
-}
-
 export interface AIProviderConfig {
   defaultModel: string
   apiUrl: string
@@ -37,31 +26,9 @@ export function getShortName(fullName: string): string {
   return parts.length > 1 ? parts[parts.length - 1] : fullName
 }
 
-export const DEFAULT_CLAW402_MODEL = 'gpt-5.6'
-
-// Models available through Claw402 (x402 USDC payment protocol)
-// Must stay in sync with the claw402 catalog (GET /api/v1/catalog)
-// Prices are USD per 1M tokens (input / output), settled pay-as-you-go via
-// the x402 upto scheme — each call is charged on actual token usage.
-export const CLAW402_MODELS: Claw402Model[] = [
-  { id: 'gpt-5.6', name: 'GPT-5.6 Sol', provider: 'OpenAI', desc: 'Flagship', brand: 'openai', priceIn: 5, priceOut: 30 },
-  { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', provider: 'OpenAI', desc: 'Balanced', brand: 'openai', priceIn: 2.5, priceOut: 15 },
-  { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', provider: 'OpenAI', desc: 'Cost-efficient', brand: 'openai', priceIn: 1, priceOut: 6 },
-  { id: 'claude-fable', name: 'Claude Fable 5', provider: 'Anthropic', desc: 'Most capable', brand: 'claude', priceIn: 10, priceOut: 50 },
-  { id: 'claude-opus', name: 'Claude Opus 4.8', provider: 'Anthropic', desc: 'Coding & agents flagship', brand: 'claude', priceIn: 5, priceOut: 25 },
-  { id: 'deepseek-v4-flash', name: 'DeepSeek-V4 Flash', provider: 'DeepSeek', desc: 'Fast general model', brand: 'deepseek', priceIn: 0.14, priceOut: 0.28 },
-  { id: 'deepseek-v4-pro', name: 'DeepSeek-V4 Pro', provider: 'DeepSeek', desc: 'Advanced reasoning', brand: 'deepseek', priceIn: 1.74, priceOut: 3.48 },
-  { id: 'glm-5', name: 'GLM-5', provider: 'Z.ai', desc: 'Deep reasoning flagship', brand: 'zhipu', priceIn: 0.6, priceOut: 2 },
-]
-
 // AI Provider configuration - default models and API links
-export const AI_PROVIDER_CONFIG: Record<string, AIProviderConfig> = {
-  claw402: {
-    defaultModel: DEFAULT_CLAW402_MODEL,
-    apiUrl: 'https://claw402.ai',
-    apiName: 'Claw402',
-  },
-}
+export const AI_PROVIDER_CONFIG: Record<string, AIProviderConfig> = {}
+
 
 // Helper function to get exchange display name from exchange ID (UUID)
 export function getExchangeDisplayName(exchangeId: string | undefined, exchanges: { id: string; exchange_type?: string; name: string; account_name?: string }[]): string {

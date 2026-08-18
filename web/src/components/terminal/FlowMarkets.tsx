@@ -28,7 +28,7 @@ const GRID = '64px 96px minmax(120px, 1fr) 80px 96px'
 
 /**
  * FlowMarkets renders the Vergex net-flow ranking (real data from
- * GET /api/vergex/flow-markets via the trader's claw402 wallet). Each row shows
+ * GET /api/vergex/flow-markets, served by the self-hosted signal service). Each row shows
  * a market's net inflow over the window, a buy/sell split bar, trade count, and
  * latest price. Sorted by net inflow descending (the upstream ordering).
  */
@@ -56,7 +56,7 @@ export function FlowMarkets({ items, window = '1h' }: FlowMarketsProps) {
   }, [items])
 
   if (rows.length === 0) {
-    return <div className="tm-sc" style={{ padding: '12px 0' }}>No net-flow data (claw402 payment required).</div>
+    return <div className="tm-sc" style={{ padding: '12px 0' }}>No net-flow data yet.</div>
   }
 
   return (

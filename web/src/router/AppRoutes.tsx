@@ -19,13 +19,12 @@ import { SetupPage } from '../components/modals/SetupPage'
 import { CompetitionPage } from '../components/trader/CompetitionPage'
 import { AITradersPage } from '../components/trader/AITradersPage'
 import { TraderLaunchGuestPage } from '../components/trader/TraderLaunchGuestPage'
+import { TerminalDashboard } from '../components/terminal/TerminalDashboard'
 import { FAQPage } from '../pages/FAQPage'
 import { LandingPage } from '../pages/LandingPage'
-import { BeginnerOnboardingPage } from '../pages/BeginnerOnboardingPage'
 import { DataPage } from '../pages/DataPage'
 import { SettingsPage } from '../pages/SettingsPage'
 import { StrategyStudioPage } from '../pages/StrategyStudioPage'
-import { TerminalDashboard } from '../components/terminal/TerminalDashboard'
 import { useAuth } from '../contexts/AuthContext'
 import { useLanguage } from '../contexts/LanguageContext'
 import { useSystemConfig } from '../hooks/useSystemConfig'
@@ -188,11 +187,7 @@ function AppChrome({
   )
 }
 
-function TradersRoute({
-  showBeginnerOnboarding = false,
-}: {
-  showBeginnerOnboarding?: boolean
-}) {
+function TradersRoute() {
   const navigate = useNavigate()
   const { user, token } = useAuth()
   const { data: traders } = useSWR<TraderInfo[]>(
@@ -208,7 +203,6 @@ function TradersRoute({
     <AppChrome
       currentPage="traders"
       animateContent
-      extraContent={showBeginnerOnboarding ? <BeginnerOnboardingPage /> : null}
     >
       <AITradersPage
         onTraderSelect={(traderId) => {
@@ -445,11 +439,8 @@ export function AppRoutes() {
         <Route
           path={ROUTES.welcome}
           element={
-            // The welcome overlay is the AI-wallet deposit page (QR +
-            // auto-refreshing balance) — useful to every signed-in user, so
-            // no legacy "beginner mode" gate here.
             isAuthenticated ? (
-              <TradersRoute showBeginnerOnboarding />
+              <TradersRoute />
             ) : (
               <Navigate to={ROUTES.login} replace />
             )

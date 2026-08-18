@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"nofx/store"
-	"nofx/wallet"
 
 	"github.com/gin-gonic/gin"
 )
@@ -15,9 +14,6 @@ import (
 // Launch readiness minimums. These are the single source of truth — the
 // frontend reads them from the preflight response instead of hardcoding.
 const (
-	// MinAIFeeUSDC is the minimum Base USDC a claw402 fee wallet needs so the
-	// trader can pay for its first AI/data calls.
-	MinAIFeeUSDC = 1.0
 	// MinTradingUSDC is the minimum available balance the exchange account
 	// needs before the trader can place its first order.
 	MinTradingUSDC = 12.0
@@ -33,16 +29,11 @@ const (
 // Check IDs — stable identifiers the frontend maps to guided-setup steps.
 const (
 	launchCheckAIModel         = "ai_model"
-	launchCheckAIWallet        = "ai_wallet"
-	launchCheckAIWalletFunds   = "ai_wallet_funds"
 	launchCheckStrategy        = "strategy"
 	launchCheckExchangeConfig  = "exchange_config"
 	launchCheckExchangeAccount = "exchange_account"
 	launchCheckExchangeFunds   = "exchange_funds"
 )
-
-// queryAIWalletBalance is swappable in tests to avoid live Base RPC calls.
-var queryAIWalletBalance = wallet.QueryUSDCBalanceCached
 
 type LaunchCheck struct {
 	ID      string `json:"id"`
@@ -61,7 +52,6 @@ type LaunchCheck struct {
 type LaunchPreflightResult struct {
 	Ready          bool          `json:"ready"`
 	Checks         []LaunchCheck `json:"checks"`
-	MinAIFeeUSDC   float64       `json:"min_ai_fee_usdc"`
 	MinTradingUSDC float64       `json:"min_trading_usdc"`
 	CheckedAt      time.Time     `json:"checked_at"`
 }
@@ -161,7 +151,6 @@ func (s *Server) runLaunchPreflight(
 	strategyRequired bool,
 ) LaunchPreflightResult {
 	checks := []LaunchCheck{checkLaunchAIModel(model)}
-	checks = append(checks, checkLaunchAIWallet(model)...)
 	checks = append(checks, checkLaunchStrategy(strategy, strategyRequired))
 	checks = append(checks, s.checkLaunchExchange(userID, exchange)...)
 
@@ -176,7 +165,6 @@ func (s *Server) runLaunchPreflight(
 	return LaunchPreflightResult{
 		Ready:          ready,
 		Checks:         checks,
-		MinAIFeeUSDC:   MinAIFeeUSDC,
 		MinTradingUSDC: MinTradingUSDC,
 		CheckedAt:      time.Now().UTC(),
 	}
@@ -197,61 +185,13 @@ func checkLaunchAIModel(model *store.AIModel) LaunchCheck {
 	case strings.TrimSpace(model.APIKey.String()) == "":
 		check.Status = launchCheckStatusFailed
 		check.Code = "MODEL_MISSING_CREDENTIALS"
-		check.Message = fmt.Sprintf("AI model \"%s\" has no credential saved. Add the API key or wallet key first.", model.Name)
+		check.Message = fmt.Sprintf("AI model \"%s\" has no credential saved. Add the API key first.", model.Name)
 	default:
 		check.Status = launchCheckStatusOK
 		check.Message = model.Name
 	}
 
 	return check
-}
-
-// checkLaunchAIWallet validates the claw402 fee wallet (address + Base USDC
-// balance). Non-claw402 providers pay per API key, so both checks are skipped.
-func checkLaunchAIWallet(model *store.AIModel) []LaunchCheck {
-	walletCheck := LaunchCheck{ID: launchCheckAIWallet}
-	fundsCheck := LaunchCheck{ID: launchCheckAIWalletFunds, Asset: "USDC", Required: MinAIFeeUSDC}
-
-	if model == nil || model.Provider != "claw402" || strings.TrimSpace(model.APIKey.String()) == "" {
-		walletCheck.Status = launchCheckStatusSkipped
-		fundsCheck.Status = launchCheckStatusSkipped
-		return []LaunchCheck{walletCheck, fundsCheck}
-	}
-
-	address, err := walletAddressFromPrivateKey(model.APIKey.String())
-	if err != nil {
-		walletCheck.Status = launchCheckStatusFailed
-		walletCheck.Code = "AI_WALLET_INVALID_KEY"
-		walletCheck.Message = "The Claw402 wallet key is invalid. Recreate the Base USDC payment wallet."
-		fundsCheck.Status = launchCheckStatusSkipped
-		return []LaunchCheck{walletCheck, fundsCheck}
-	}
-
-	walletCheck.Status = launchCheckStatusOK
-	walletCheck.Address = address
-	fundsCheck.Address = address
-
-	balance, err := queryAIWalletBalance(address)
-	if err != nil {
-		fundsCheck.Status = launchCheckStatusWarning
-		fundsCheck.Code = "AI_WALLET_BALANCE_UNKNOWN"
-		fundsCheck.Message = "Could not verify the Base USDC balance right now. The trader will start, but AI calls fail if the wallet is empty."
-		return []LaunchCheck{walletCheck, fundsCheck}
-	}
-
-	fundsCheck.Actual = &balance
-	if balance < MinAIFeeUSDC {
-		fundsCheck.Status = launchCheckStatusFailed
-		fundsCheck.Code = "AI_WALLET_INSUFFICIENT_FUNDS"
-		fundsCheck.Message = fmt.Sprintf(
-			"The Claw402 wallet holds %.2f USDC but needs at least %.0f USDC on Base to pay for AI and data calls.",
-			balance, MinAIFeeUSDC,
-		)
-	} else {
-		fundsCheck.Status = launchCheckStatusOK
-	}
-
-	return []LaunchCheck{walletCheck, fundsCheck}
 }
 
 func checkLaunchStrategy(strategy *store.Strategy, required bool) LaunchCheck {

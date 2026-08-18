@@ -29,7 +29,6 @@ function readyPreflight(): LaunchPreflightResult {
   return {
     ready: true,
     checks: [],
-    min_ai_fee_usdc: 1,
     min_trading_usdc: 12,
     checked_at: new Date().toISOString(),
   }
@@ -40,13 +39,12 @@ function failedPreflight(): LaunchPreflightResult {
     ready: false,
     checks: [
       {
-        id: 'ai_wallet_funds',
+        id: 'exchange_funds',
         status: 'failed',
-        code: 'AI_WALLET_INSUFFICIENT_FUNDS',
-        message: 'AI wallet needs 1 USDC.',
+        code: 'EXCHANGE_INSUFFICIENT_FUNDS',
+        message: 'Trading account needs 12 USDC.',
       },
     ],
-    min_ai_fee_usdc: 1,
     min_trading_usdc: 12,
     checked_at: new Date().toISOString(),
   }
@@ -79,8 +77,8 @@ describe('launchAutopilot', () => {
     if (outcome.ok || outcome.kind !== 'preflight') {
       throw new Error('expected a preflight failure outcome')
     }
-    expect(outcome.setupTarget).toBe('claw402')
-    expect(outcome.message).toContain('AI wallet needs 1 USDC.')
+    expect(outcome.setupTarget).toBe('hyperliquid-funds')
+    expect(outcome.message).toContain('Trading account needs 12 USDC.')
   })
 
   it('creates and starts the trader after preflight passes', async () => {
@@ -105,6 +103,21 @@ describe('launchAutopilot', () => {
     expect(outcome).toEqual(
       expect.objectContaining({ ok: true, traderId: 't-1' })
     )
+  })
+
+  it('routes a missing model to the model setup anchor', async () => {
+    mocks.resolveLaunchModel.mockResolvedValue(null)
+
+    const outcome = await launchAutopilot({ ensureStrategy: vi.fn() })
+
+    expect(outcome).toEqual(
+      expect.objectContaining({
+        ok: false,
+        kind: 'setup',
+        setupTarget: 'model',
+      })
+    )
+    expect(mocks.runLaunchPreflight).not.toHaveBeenCalled()
   })
 
   it('updates the existing autopilot instead of creating a duplicate', async () => {
@@ -176,7 +189,7 @@ describe('launchAutopilot', () => {
     if (outcome.ok || outcome.kind !== 'preflight') {
       throw new Error('expected a preflight failure outcome')
     }
-    expect(outcome.setupTarget).toBe('claw402')
+    expect(outcome.setupTarget).toBe('hyperliquid-funds')
   })
 
   it('routes missing exchange setup to the hyperliquid anchor', async () => {

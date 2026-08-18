@@ -73,8 +73,8 @@ func (s *Server) handleVergexCostLiquidationHeatmap(c *gin.Context) {
 	c.Data(http.StatusOK, "application/json; charset=utf-8", body)
 }
 
-// handleVergexFlowMarkets proxies the Vergex net-flow market ranking (paid x402
-// endpoint) using the caller's claw402 wallet. The upstream JSON is passed
+// handleVergexFlowMarkets proxies the Vergex net-flow market ranking from the
+// self-hosted signal service (no wallet key). The upstream JSON is passed
 // through verbatim: { data: { window, by, inflow: [{ symbol, netFlow,
 // buyNotional, sellNotional, trades, latestPrice }, ...] } }.
 func (s *Server) handleVergexFlowMarkets(c *gin.Context) {
@@ -102,9 +102,6 @@ func (s *Server) newVergexClientForRequest(c *gin.Context) (*vergex.Client, bool
 		return nil, false
 	}
 	// The self-hosted signal service requires no wallet key.
-	// Pass the caller's claw402 wallet key if one was resolved for this request
-	// (empty falls back to CLAW402_WALLET_KEY env). The client routes the heatmap
-	// to claw402 only when a key is present.
 	return vergex.NewClient("", "", &logger.MCPLogger{}), true
 }
 

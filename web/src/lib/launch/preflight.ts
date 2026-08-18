@@ -65,9 +65,7 @@ export function describeLaunchFailures(result: LaunchPreflightResult): string {
 export function setupTargetForCheck(check: LaunchCheck): SetupTarget | null {
   switch (check.id) {
     case 'ai_model':
-    case 'ai_wallet':
-    case 'ai_wallet_funds':
-      return 'claw402'
+      return 'model'
     case 'exchange_config':
     case 'exchange_account':
       return 'hyperliquid'

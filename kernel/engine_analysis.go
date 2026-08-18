@@ -140,7 +140,7 @@ func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *S
 	// stream/SSE parsers return empty content ("no content received"). That is a
 	// transient, retryable failure — a retry usually takes the short-reasoning
 	// path and succeeds. Only retry this specific empty-content case; other AI
-	// errors (auth, rate-limit, 5xx) fail fast to avoid duplicate x402 payments.
+	// errors (auth, rate-limit, 5xx) fail fast to avoid duplicate charges.
 	var aiResponse string
 	var aiCallDuration time.Duration
 	var aiErr error

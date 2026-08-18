@@ -7,7 +7,6 @@ import (
 	"nofx/crypto"
 	"nofx/logger"
 	"nofx/manager"
-	_ "nofx/mcp/payment"
 	_ "nofx/mcp/provider"
 	"nofx/store"
 	"nofx/telegram"
