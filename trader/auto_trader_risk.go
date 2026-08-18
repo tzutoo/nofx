@@ -228,6 +228,7 @@ func (at *AutoTrader) checkTrailingStops(positions []map[string]interface{}, atr
 		// ATR (fail-closed: no trail action without volatility data).
 		atr14 := at.atrForSymbol(atrCache, symbol)
 		if atr14 <= 0 {
+			logger.Infof("⚠️ Trailing stop skipped %s %s: no 15m ATR14 available (fail-closed, fixed SL only)", symbol, side)
 			continue
 		}
 
