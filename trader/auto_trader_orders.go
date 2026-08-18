@@ -28,6 +28,14 @@ const (
 	// matching the vergexHoldRules prompt guidance (~-3% stop, ~+8% target).
 	defaultStopLossPct   = 0.03
 	defaultTakeProfitPct = 0.08
+
+	// minATRFraction is the minimum ATR14 (as a fraction of price) below which
+	// ATR is treated as invalid. Testnet klines for low-liquidity coins are often
+	// flat (near-zero range), yielding a garbage ~0 ATR that makes the trailing
+	// stop arm instantly and ratchet the SL to the current price. Below this
+	// floor we return 0 so open-time SL/TP fall back to the fixed default and
+	// the trail skips (fail-closed) instead of churning.
+	minATRFraction = 0.005 // 0.5% of price
 )
 
 // ensureStopLossTakeProfitDefaults fills BOTH SL/TP from entryPrice whenever
@@ -105,7 +113,17 @@ func (at *AutoTrader) fetchATR14(symbol string) float64 {
 	if err != nil || data == nil || data.TimeframeData == nil || data.TimeframeData[tf] == nil {
 		return 0
 	}
-	return data.TimeframeData[tf].ATR14
+	tfData := data.TimeframeData[tf]
+	atr14 := tfData.ATR14
+	// Floor: treat a degenerate (flat/sparse) ATR as invalid so the trailing stop
+	// does not arm at ~0% and ratchet the SL to the current price, and so
+	// open-time SL/TP fall back to the fixed default instead of a ~0-width stop.
+	if len(tfData.Klines) > 0 {
+		if price := tfData.Klines[len(tfData.Klines)-1].Close; price > 0 && atr14 < minATRFraction*price {
+			return 0
+		}
+	}
+	return atr14
 }
 
 // positionKey returns the canonical position key (symbol_side, side lowercased).
